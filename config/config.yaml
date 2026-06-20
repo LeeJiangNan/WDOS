@@ -1,0 +1,50 @@
+# ============================================================
+# WDOS 配置文件
+# 密码/密钥类敏感信息通过环境变量注入: ${VAR_NAME}
+# ============================================================
+server:
+  port: "8080"
+  mode: debug
+
+crip:
+  callback_path: "/api/v1/callback/crip"
+  openapi_base: "http://127.0.0.1:8080"
+  openapi_app_id: "${CRIP_APP_ID}"
+  openapi_app_secret: "${CRIP_APP_SECRET}"
+  heartbeat_interval: 300
+
+database:
+  host: "127.0.0.1"
+  port: 3306
+  name: "wdos_db"
+  user: "wdos"
+  password: "${WDOS_DB_PASSWORD}"
+
+redis:
+  addr: "127.0.0.1:6379"
+  prefix: "wdos:"
+  db: 0
+  password: ""
+
+minio:
+  endpoint: "127.0.0.1:9000"
+  access_key: "minioadmin"
+  secret_key: "${WDOS_MINIO_SECRET}"
+  bucket: "wdos"
+  use_ssl: false
+
+wechat:
+  app_id: "${WECHAT_APP_ID}"
+  app_secret: "${WECHAT_APP_SECRET}"
+
+jwt:
+  secret: "${JWT_SECRET}"
+  expire_seconds: 604800
+
+sla:
+  accept_l1_seconds: 30
+  accept_l2_seconds: 120
+  accept_l3_seconds: 300
+  process_l1_seconds: 150
+  process_l2_seconds: 300
+  process_l3_seconds: 600

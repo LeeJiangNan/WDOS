@@ -1,0 +1,45 @@
+version: "3.8"
+services:
+  wdos-mysql:
+    image: mysql:8.0
+    container_name: wdos-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      MYSQL_DATABASE: wdos_db
+      MYSQL_USER: wdos
+      MYSQL_PASSWORD: wdos123
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    command: --default-authentication-plugin=mysql_native_password
+
+  wdos-redis:
+    image: redis:7-alpine
+    container_name: wdos-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  wdos-minio:
+    image: minio/minio:latest
+    container_name: wdos-minio
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+
+volumes:
+  mysql_data:
+  redis_data:
+  minio_data:

@@ -1,0 +1,30 @@
+# 二进制
+/bin/
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# 依赖
+vendor/
+
+# 配置（敏感信息）
+config/config.local.yaml
+
+# 数据
+/tmp/
+*.log
+
+# 前端
+web/node_modules/
+web/dist/
+miniapp/node_modules/
+
+# Docker volumes
+deploy/data/
+
+# macOS
+.DS_Store
