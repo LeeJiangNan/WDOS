@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/LeeJiangNan/WDOS/internal/pkg/logger"
 	"github.com/LeeJiangNan/WDOS/internal/service/alarm"
 	"github.com/LeeJiangNan/WDOS/internal/service/auth"
+	"github.com/LeeJiangNan/WDOS/internal/service/workorder"
 	jwtpkg "github.com/LeeJiangNan/WDOS/internal/pkg/jwt"
 	miniox "github.com/LeeJiangNan/WDOS/internal/repository/minio"
 	"github.com/LeeJiangNan/WDOS/internal/repository/mysql"
@@ -82,12 +84,13 @@ func main() {
 	jwtMgr := jwtpkg.New(cfg.JWT.Secret, cfg.JWT.ExpireSeconds)
 	authSvc := auth.New(db, jwtMgr, cfg.Wechat.AppID, cfg.Wechat.AppSecret, sugar)
 	alarmSvc := alarm.New(db, rdb, minioClient, cfg.MinIO.Bucket, cfg.Redis.Prefix, cfg.CRIP, sugar)
+	templateSvc := workorder.NewTemplateService(db, sugar)
 
 	// 8.5 初始化种子数据（管理员账号）
 	seedAdmin(db, sugar)
 
 	// 9. 注册路由
-	registerRoutes(engine, alarmSvc, authSvc, jwtMgr, cfg, sugar)
+	registerRoutes(engine, alarmSvc, authSvc, templateSvc, jwtMgr, cfg, sugar)
 
 	// 9. 启动 HTTP 服务
 	addr := ":" + cfg.Server.Port
@@ -139,6 +142,7 @@ func registerRoutes(
 	engine *gin.Engine,
 	alarmSvc *alarm.Service,
 	authSvc *auth.Service,
+	templateSvc *workorder.TemplateService,
 	jwtMgr *jwtpkg.Manager,
 	cfg *config.Config,
 	sugar *zap.SugaredLogger,
@@ -265,6 +269,85 @@ func registerRoutes(
 			}
 			response.Success(c, result)
 		})
+
+		// ========== 工单模板管理 ==========
+		templates := v1.Group("/templates")
+		{
+			templates.GET("", func(c *gin.Context) {
+				status := c.Query("status")
+				page := 1
+				size := 20
+				list, total, err := templateSvc.List(status, page, size)
+				if err != nil {
+					response.ServerError(c, err.Error())
+					return
+				}
+				response.Success(c, gin.H{"list": list, "total": total})
+			})
+
+			templates.GET("/:id", func(c *gin.Context) {
+				id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+				tpl, err := templateSvc.Get(id)
+				if err != nil {
+					response.NotFound(c, err.Error())
+					return
+				}
+				response.Success(c, tpl)
+			})
+
+			templates.POST("", func(c *gin.Context) {
+				var req struct {
+					Name        string          `json:"name"`
+					Description string          `json:"description"`
+					FormSchema  json.RawMessage `json:"form_schema"`
+					FlowID      uint64          `json:"flow_id"`
+				}
+				if err := c.ShouldBindJSON(&req); err != nil {
+					response.BadRequest(c, "参数错误")
+					return
+				}
+				tpl, err := templateSvc.Create(req.Name, req.Description, req.FormSchema, req.FlowID)
+				if err != nil {
+					response.BadRequest(c, err.Error())
+					return
+				}
+				response.Success(c, tpl)
+			})
+
+			templates.PUT("/:id", func(c *gin.Context) {
+				id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+				var req struct {
+					Name        string          `json:"name"`
+					Description string          `json:"description"`
+					FormSchema  json.RawMessage `json:"form_schema"`
+					FlowID      uint64          `json:"flow_id"`
+				}
+				if err := c.ShouldBindJSON(&req); err != nil {
+					response.BadRequest(c, "参数错误")
+					return
+				}
+				tpl, err := templateSvc.Update(id, req.Name, req.Description, req.FormSchema, req.FlowID)
+				if err != nil {
+					response.BadRequest(c, err.Error())
+					return
+				}
+				response.Success(c, tpl)
+			})
+
+			templates.POST("/:id/toggle", func(c *gin.Context) {
+				id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+				var req struct {
+					IsActive bool `json:"is_active"`
+				}
+				c.ShouldBindJSON(&req)
+				tpl, err := templateSvc.Toggle(id, req.IsActive)
+				if err != nil {
+					response.NotFound(c, err.Error())
+					return
+				}
+				response.Success(c, tpl)
+			})
+		}
 
 		// ========== 工单中心（占位，后续实现）==========
 		v1.GET("/work-orders/pending", func(c *gin.Context) {
