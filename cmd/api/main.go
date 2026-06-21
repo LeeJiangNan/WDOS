@@ -19,8 +19,10 @@ import (
 	"github.com/LeeJiangNan/WDOS/internal/pkg/logger"
 	"github.com/LeeJiangNan/WDOS/internal/service/alarm"
 	"github.com/LeeJiangNan/WDOS/internal/service/auth"
+	"github.com/LeeJiangNan/WDOS/internal/service/notify"
 	"github.com/LeeJiangNan/WDOS/internal/service/sla"
 	"github.com/LeeJiangNan/WDOS/internal/service/workorder"
+	"github.com/gorilla/websocket"
 	jwtpkg "github.com/LeeJiangNan/WDOS/internal/pkg/jwt"
 	miniox "github.com/LeeJiangNan/WDOS/internal/repository/minio"
 	"github.com/LeeJiangNan/WDOS/internal/repository/mysql"
@@ -87,6 +89,7 @@ func main() {
 	alarmSvc := alarm.New(db, rdb, minioClient, cfg.MinIO.Bucket, cfg.Redis.Prefix, cfg.CRIP, sugar)
 	templateSvc := workorder.NewTemplateService(db, sugar)
 	orderSvc := workorder.NewService(db, sugar)
+	notifyHub := notify.NewHub(db, sugar)
 
 	// 8.5 初始化种子数据（管理员账号）
 	seedAdmin(db, sugar)
@@ -100,7 +103,7 @@ func main() {
 	go slaEngine.Run(context.Background(), 1*time.Second)
 
 	// 9. 注册路由
-	registerRoutes(engine, alarmSvc, authSvc, templateSvc, orderSvc, jwtMgr, cfg, sugar)
+	registerRoutes(engine, alarmSvc, authSvc, templateSvc, orderSvc, notifyHub, jwtMgr, cfg, sugar)
 
 	// 9. 启动 HTTP 服务
 	addr := ":" + cfg.Server.Port
@@ -154,6 +157,7 @@ func registerRoutes(
 	authSvc *auth.Service,
 	templateSvc *workorder.TemplateService,
 	orderSvc *workorder.Service,
+	notifyHub *notify.Hub,
 	jwtMgr *jwtpkg.Manager,
 	cfg *config.Config,
 	sugar *zap.SugaredLogger,
@@ -174,6 +178,14 @@ func registerRoutes(
 	// 心跳
 	engine.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "pong"})
+	})
+
+	// WebSocket 实时通知
+	var wsUpgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	engine.GET("/ws/notifications", func(c *gin.Context) {
+		conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+		if err != nil { return }
+		notifyHub.Register(conn, 0)
 	})
 
 	// API v1
