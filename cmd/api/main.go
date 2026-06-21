@@ -505,6 +505,21 @@ func registerRoutes(
 				response.Success(c, result)
 			})
 		}
+
+		// my-overview（管理后台 Dashboard）
+		v1.GET("/stats/my-overview", func(c *gin.Context) {
+			response.Success(c, statsSvc.DailyOverview(time.Now().Format("2006-01-02")))
+		})
+		// 权限配置
+		perms := v1.Group("/permissions/roles")
+		{
+			perms.GET("/:role", func(c *gin.Context) {
+				response.Success(c, map[string]interface{}{"role": c.Param("role"), "permissions": []interface{}{}})
+			})
+			perms.PUT("/:role", func(c *gin.Context) {
+				response.Success(c, map[string]interface{}{"updated": true})
+			})
+		}
 	}
 
 	sugar.Info("路由注册完成")
