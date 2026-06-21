@@ -53,6 +53,10 @@ func (s *Service) CreateOrder(req *CreateOrderReq) (*model.WorkOrder, error) {
 		FormData:      &defaultForm,
 	}
 
+	// 设置接单 SLA 截止时间
+	acceptDeadline := time.Now().Add(30 * time.Second)
+	order.SlaAcceptDeadline = &acceptDeadline
+
 	if err := s.db.Create(order).Error; err != nil {
 		return nil, fmt.Errorf("创建工单失败: %w", err)
 	}
@@ -119,6 +123,10 @@ func (s *Service) AcceptOrder(orderID, userID uint64, userName string) (*model.W
 	order.AccepterName = userName
 	order.AssigneeID = userID
 	order.AcceptedAt = &now
+
+	// 设置处理 SLA 截止时间
+	processDeadline := now.Add(150 * time.Second)
+	order.SlaProcessDeadline = &processDeadline
 
 	if err := s.db.Save(&order).Error; err != nil {
 		return nil, fmt.Errorf("接单失败: %w", err)

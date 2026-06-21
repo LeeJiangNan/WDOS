@@ -19,6 +19,7 @@ import (
 	"github.com/LeeJiangNan/WDOS/internal/pkg/logger"
 	"github.com/LeeJiangNan/WDOS/internal/service/alarm"
 	"github.com/LeeJiangNan/WDOS/internal/service/auth"
+	"github.com/LeeJiangNan/WDOS/internal/service/sla"
 	"github.com/LeeJiangNan/WDOS/internal/service/workorder"
 	jwtpkg "github.com/LeeJiangNan/WDOS/internal/pkg/jwt"
 	miniox "github.com/LeeJiangNan/WDOS/internal/repository/minio"
@@ -89,6 +90,14 @@ func main() {
 
 	// 8.5 初始化种子数据（管理员账号）
 	seedAdmin(db, sugar)
+
+	// 8.6 启动 SLA 引擎
+	slaEngine := sla.New(db,
+		cfg.SLA.AcceptL1Seconds, cfg.SLA.AcceptL2Seconds, cfg.SLA.AcceptL3Seconds,
+		cfg.SLA.ProcessL1Seconds, cfg.SLA.ProcessL2Seconds, cfg.SLA.ProcessL3Seconds,
+		sugar,
+	)
+	go slaEngine.Run(context.Background(), 1*time.Second)
 
 	// 9. 注册路由
 	registerRoutes(engine, alarmSvc, authSvc, templateSvc, orderSvc, jwtMgr, cfg, sugar)
