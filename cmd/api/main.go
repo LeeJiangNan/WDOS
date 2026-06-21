@@ -20,6 +20,7 @@ import (
 	"github.com/LeeJiangNan/WDOS/internal/service/alarm"
 	"github.com/LeeJiangNan/WDOS/internal/service/auth"
 	"github.com/LeeJiangNan/WDOS/internal/service/notify"
+	"github.com/LeeJiangNan/WDOS/internal/service/schedule"
 	"github.com/LeeJiangNan/WDOS/internal/service/sla"
 	"github.com/LeeJiangNan/WDOS/internal/service/workorder"
 	"github.com/gorilla/websocket"
@@ -90,6 +91,7 @@ func main() {
 	templateSvc := workorder.NewTemplateService(db, sugar)
 	orderSvc := workorder.NewService(db, sugar)
 	notifyHub := notify.NewHub(db, sugar)
+	scheduleSvc := schedule.New(db, sugar)
 
 	// 8.5 初始化种子数据（管理员账号）
 	seedAdmin(db, sugar)
@@ -103,7 +105,7 @@ func main() {
 	go slaEngine.Run(context.Background(), 1*time.Second)
 
 	// 9. 注册路由
-	registerRoutes(engine, alarmSvc, authSvc, templateSvc, orderSvc, notifyHub, jwtMgr, cfg, sugar)
+	registerRoutes(engine, alarmSvc, authSvc, templateSvc, orderSvc, scheduleSvc, notifyHub, jwtMgr, cfg, sugar)
 
 	// 9. 启动 HTTP 服务
 	addr := ":" + cfg.Server.Port
@@ -157,6 +159,7 @@ func registerRoutes(
 	authSvc *auth.Service,
 	templateSvc *workorder.TemplateService,
 	orderSvc *workorder.Service,
+	scheduleSvc *schedule.Service,
 	notifyHub *notify.Hub,
 	jwtMgr *jwtpkg.Manager,
 	cfg *config.Config,
@@ -433,6 +436,26 @@ func registerRoutes(
 				order, err := orderSvc.TransferOrder(id, req.ToUserID, req.ToUserName, c.GetString("name"), req.Reason)
 				if err != nil { response.BadRequest(c, err.Error()); return }
 				response.Success(c, order)
+			})
+		}
+		// ========== 排班管理 ==========
+		schedules := v1.Group("/schedules")
+		{
+			schedules.GET("", func(c *gin.Context) {
+				date := c.Query("date")
+				if date == "" { date = time.Now().Format("2006-01-02") }
+				result, _ := scheduleSvc.GetByDate(date, 0)
+				response.Success(c, result)
+			})
+			schedules.POST("", func(c *gin.Context) {
+				var req schedule.SetScheduleReq
+				if err := c.ShouldBindJSON(&req); err != nil {
+					response.BadRequest(c, "参数错误")
+					return
+				}
+				result, err := scheduleSvc.SetSchedule(&req)
+				if err != nil { response.BadRequest(c, err.Error()); return }
+				response.Success(c, result)
 			})
 		}
 	}
