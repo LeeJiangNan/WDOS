@@ -592,6 +592,75 @@ func registerRoutes(
 				response.Success(c, map[string]interface{}{"updated": true})
 			})
 		}
+
+		// ========== 抑制策略 ==========
+		suppGrp := v1.Group("/suppression-rules")
+		{
+			suppGrp.GET("", func(c *gin.Context) {
+				var rules []model.SuppressionRule
+				db.Where("is_active = ?", true).Find(&rules)
+				response.Success(c, map[string]interface{}{"list": rules})
+			})
+			suppGrp.POST("", func(c *gin.Context) {
+				var rule model.SuppressionRule
+				c.ShouldBindJSON(&rule); rule.IsActive = true
+				db.Create(&rule); response.Success(c, rule)
+			})
+			suppGrp.PUT("/:id", func(c *gin.Context) {
+				id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+				var rule model.SuppressionRule
+				c.ShouldBindJSON(&rule); rule.ID = id
+				db.Save(&rule); response.Success(c, rule)
+			})
+		}
+		// ========== 用户管理 ==========
+		userGrp := v1.Group("/users")
+		{
+			userGrp.GET("", func(c *gin.Context) {
+				var list []model.User
+				q := db.Model(&model.User{})
+				if role := c.Query("role"); role != "" { q = q.Where("role = ?", role) }
+				q.Find(&list)
+				for i := range list { list[i].Password = "" }
+				response.Success(c, map[string]interface{}{"list": list})
+			})
+			userGrp.POST("", func(c *gin.Context) {
+				var user model.User
+				c.ShouldBindJSON(&user)
+				if user.Password != "" {
+					hashed, _ := auth.HashPassword(user.Password)
+					user.Password = hashed
+				}
+				user.Status = "active"
+				db.Create(&user); user.Password = ""
+				response.Success(c, user)
+			})
+			userGrp.PUT("/:id", func(c *gin.Context) {
+				id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+				var user model.User
+				c.ShouldBindJSON(&user); user.ID = id
+				if user.Password != "" {
+					hashed, _ := auth.HashPassword(user.Password)
+					user.Password = hashed
+				}
+				db.Updates(&user); user.Password = ""
+				response.Success(c, user)
+			})
+		}
+		// my-overview（管理后台 Dashboard）
+		v1.GET("/stats/my-overview", func(c *gin.Context) {
+			response.Success(c, statsSvc.DailyOverview(time.Now().Format("2006-01-02")))
+		})
+		// 权限配置
+		permGrp := v1.Group("/permissions/roles")
+		{
+			permGrp.GET("/:role", func(c *gin.Context) {
+				response.Success(c, map[string]interface{}{"role": c.Param("role"), "permissions": []interface{}{}})
+			})
+			permGrp.PUT("/:role", func(c *gin.Context) {
+				response.Success(c, map[string]interface{}{"updated": true})
+			})
+		}
 	sugar.Info("路由注册完成")
 }
 
