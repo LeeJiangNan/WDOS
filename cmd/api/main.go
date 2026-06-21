@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -20,8 +21,10 @@ import (
 	"github.com/LeeJiangNan/WDOS/internal/service/alarm"
 	"github.com/LeeJiangNan/WDOS/internal/service/auth"
 	"github.com/LeeJiangNan/WDOS/internal/service/notify"
+	"github.com/LeeJiangNan/WDOS/internal/service/route"
 	"github.com/LeeJiangNan/WDOS/internal/service/schedule"
 	"github.com/LeeJiangNan/WDOS/internal/service/sla"
+	"github.com/LeeJiangNan/WDOS/internal/service/stats"
 	"github.com/LeeJiangNan/WDOS/internal/service/workorder"
 	"github.com/gorilla/websocket"
 	jwtpkg "github.com/LeeJiangNan/WDOS/internal/pkg/jwt"
@@ -92,6 +95,8 @@ func main() {
 	orderSvc := workorder.NewService(db, sugar)
 	notifyHub := notify.NewHub(db, sugar)
 	scheduleSvc := schedule.New(db, sugar)
+	routeEngine := route.NewEngine(db, sugar)
+	statsSvc := stats.New(db, sugar)
 
 	// 8.5 初始化种子数据（管理员账号）
 	seedAdmin(db, sugar)
@@ -105,7 +110,7 @@ func main() {
 	go slaEngine.Run(context.Background(), 1*time.Second)
 
 	// 9. 注册路由
-	registerRoutes(engine, alarmSvc, authSvc, templateSvc, orderSvc, scheduleSvc, notifyHub, jwtMgr, cfg, sugar)
+	registerRoutes(engine, alarmSvc, authSvc, templateSvc, orderSvc, scheduleSvc, routeEngine, statsSvc, notifyHub, jwtMgr, cfg, sugar)
 
 	// 9. 启动 HTTP 服务
 	addr := ":" + cfg.Server.Port
@@ -160,6 +165,8 @@ func registerRoutes(
 	templateSvc *workorder.TemplateService,
 	orderSvc *workorder.Service,
 	scheduleSvc *schedule.Service,
+	routeEngine *route.Engine,
+	statsSvc *stats.Service,
 	notifyHub *notify.Hub,
 	jwtMgr *jwtpkg.Manager,
 	cfg *config.Config,
@@ -439,6 +446,46 @@ func registerRoutes(
 			})
 		}
 		// ========== 排班管理 ==========
+		// ========== 统计报表 ==========
+		statsRoutes := v1.Group("/stats")
+		{
+			statsRoutes.GET("/daily-overview", func(c *gin.Context) {
+				date := c.DefaultQuery("date", time.Now().Format("2006-01-02"))
+				response.Success(c, statsSvc.DailyOverview(date))
+			})
+			statsRoutes.GET("/by-algorithm", func(c *gin.Context) {
+				date := c.DefaultQuery("date", time.Now().Format("2006-01-02"))
+				response.Success(c, map[string]interface{}{"items": statsSvc.ByAlgorithm(date)})
+			})
+			statsRoutes.GET("/by-area", func(c *gin.Context) {
+				date := c.DefaultQuery("date", time.Now().Format("2006-01-02"))
+				response.Success(c, map[string]interface{}{"areas": statsSvc.ByArea(date)})
+			})
+			statsRoutes.GET("/process-time-distribution", func(c *gin.Context) {
+				date := c.DefaultQuery("date", time.Now().Format("2006-01-02"))
+				response.Success(c, map[string]interface{}{"buckets": statsSvc.ProcessTimeDist(date)})
+			})
+			statsRoutes.GET("/trend", func(c *gin.Context) { days := 7; fmt.Sscanf(c.DefaultQuery("days", "7"), "%d", &days); response.Success(c, map[string]interface{}{"points": statsSvc.Trend(days)}) })
+			statsRoutes.GET("/user-ranking", func(c *gin.Context) {
+				date := c.DefaultQuery("date", time.Now().Format("2006-01-02"))
+				response.Success(c, map[string]interface{}{"list": statsSvc.UserRanking(date)})
+			})
+		}
+
+		// ========== 区域路由 ==========
+		routing := v1.Group("/routing-rules")
+		{
+			routing.GET("", func(c *gin.Context) {
+				rules := routeEngine.ListRules()
+				response.Success(c, map[string]interface{}{"list": rules})
+			})
+			routing.POST("", func(c *gin.Context) {
+				var rule model.AreaRoutingRule
+				c.ShouldBindJSON(&rule)
+				routeEngine.CreateRule(&rule)
+			})
+		}
+
 		schedules := v1.Group("/schedules")
 		{
 			schedules.GET("", func(c *gin.Context) {
