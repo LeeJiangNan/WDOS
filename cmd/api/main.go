@@ -3,6 +3,8 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -14,13 +16,12 @@ import (
 	"github.com/LeeJiangNan/WDOS/internal/model"
 	"github.com/LeeJiangNan/WDOS/internal/pkg/config"
 	"github.com/LeeJiangNan/WDOS/internal/pkg/logger"
+	"github.com/LeeJiangNan/WDOS/internal/service/alarm"
 	miniox "github.com/LeeJiangNan/WDOS/internal/repository/minio"
 	"github.com/LeeJiangNan/WDOS/internal/repository/mysql"
 	redisx "github.com/LeeJiangNan/WDOS/internal/repository/redis"
 	"github.com/LeeJiangNan/WDOS/pkg/response"
 
-	"github.com/minio/minio-go/v7"
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -75,8 +76,11 @@ func main() {
 	engine := gin.New()
 	engine.Use(gin.Recovery(), gin.Logger())
 
-	// 8. 注册路由
-	registerRoutes(engine, db, rdb, minioClient, cfg, sugar)
+	// 8. 初始化服务
+	alarmSvc := alarm.New(db, rdb, minioClient, cfg.MinIO.Bucket, cfg.Redis.Prefix, sugar)
+
+	// 9. 注册路由
+	registerRoutes(engine, alarmSvc, cfg, sugar)
 
 	// 9. 启动 HTTP 服务
 	addr := ":" + cfg.Server.Port
@@ -126,9 +130,7 @@ func autoMigrate(db *gorm.DB) error {
 // registerRoutes 注册所有路由
 func registerRoutes(
 	engine *gin.Engine,
-	db *gorm.DB,
-	rdb *redis.Client,
-	minioClient *minio.Client,
+	alarmSvc *alarm.Service,
 	cfg *config.Config,
 	sugar *zap.SugaredLogger,
 ) {
@@ -136,7 +138,7 @@ func registerRoutes(
 	engine.GET("/health", func(c *gin.Context) {
 		response.Success(c, gin.H{
 			"status":  "ok",
-			"version": "0.1.0",
+			"version": "0.2.0",
 			"services": gin.H{
 				"mysql": "connected",
 				"redis": "connected",
@@ -153,12 +155,41 @@ func registerRoutes(
 	// API v1
 	v1 := engine.Group("/api/v1")
 	{
-		// Callback 接收（无需鉴权）
+		// ========== Callback 接收（无需鉴权）==========
 		v1.POST("/callback/crip", func(c *gin.Context) {
-			response.Success(c, gin.H{"message": "callback receiver — 待实现"})
+			// 读取 body
+			body, err := io.ReadAll(c.Request.Body)
+			if err != nil {
+				response.BadRequest(c, "读取请求体失败")
+				return
+			}
+
+			// 解析 CRIP JSON
+			var cb model.CRIPCallback
+			if err := json.Unmarshal(body, &cb); err != nil {
+				response.BadRequest(c, "JSON 解析失败: "+err.Error())
+				return
+			}
+
+			// 校验必填字段
+			if cb.SnowflakeID == "" {
+				response.BadRequest(c, "缺少 snowflake_id")
+				return
+			}
+
+			// 处理报警
+			result, err := alarmSvc.ProcessCallback(c.Request.Context(), &cb)
+			if err != nil {
+				sugar.Errorf("处理 Callback 失败: %v", err)
+				response.ServerError(c, "处理报警失败")
+				return
+			}
+
+			sugar.Infof("Callback 处理完成: snowflake=%s, action=%s", cb.SnowflakeID, result.Action)
+			response.Success(c, result)
 		})
 
-		// 认证接口
+		// ========== 认证接口 ==========
 		auth := v1.Group("/auth")
 		{
 			auth.POST("/login", func(c *gin.Context) {
@@ -169,7 +200,7 @@ func registerRoutes(
 			})
 		}
 
-		// 工单（占位）
+		// ========== 工单中心（占位，后续实现）==========
 		v1.GET("/work-orders/pending", func(c *gin.Context) {
 			response.Success(c, gin.H{"list": []interface{}{}, "total": 0})
 		})

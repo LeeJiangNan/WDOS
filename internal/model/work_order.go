@@ -25,7 +25,7 @@ type WorkOrder struct {
 	EscalatedLevel      int        `gorm:"default:0;comment:上报层级" json:"escalated_level"`
 	SlaAcceptDeadline   *time.Time `gorm:"comment:接单SLA截止" json:"sla_accept_deadline"`
 	SlaProcessDeadline  *time.Time `gorm:"comment:处理SLA截止" json:"sla_process_deadline"`
-	FormData            string     `gorm:"type:json;comment:表单数据" json:"form_data"`
+	FormData            *string    `gorm:"type:json;comment:表单数据" json:"form_data"`
 	Resolution          string     `gorm:"type:text;comment:处理结果" json:"resolution"`
 	CameraName          string     `gorm:"size:100" json:"camera_name"`
 	AlgorithmName       string     `gorm:"size:50" json:"algorithm_name"`
