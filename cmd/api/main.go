@@ -85,12 +85,13 @@ func main() {
 	authSvc := auth.New(db, jwtMgr, cfg.Wechat.AppID, cfg.Wechat.AppSecret, sugar)
 	alarmSvc := alarm.New(db, rdb, minioClient, cfg.MinIO.Bucket, cfg.Redis.Prefix, cfg.CRIP, sugar)
 	templateSvc := workorder.NewTemplateService(db, sugar)
+	orderSvc := workorder.NewService(db, sugar)
 
 	// 8.5 初始化种子数据（管理员账号）
 	seedAdmin(db, sugar)
 
 	// 9. 注册路由
-	registerRoutes(engine, alarmSvc, authSvc, templateSvc, jwtMgr, cfg, sugar)
+	registerRoutes(engine, alarmSvc, authSvc, templateSvc, orderSvc, jwtMgr, cfg, sugar)
 
 	// 9. 启动 HTTP 服务
 	addr := ":" + cfg.Server.Port
@@ -143,6 +144,7 @@ func registerRoutes(
 	alarmSvc *alarm.Service,
 	authSvc *auth.Service,
 	templateSvc *workorder.TemplateService,
+	orderSvc *workorder.Service,
 	jwtMgr *jwtpkg.Manager,
 	cfg *config.Config,
 	sugar *zap.SugaredLogger,
@@ -349,10 +351,69 @@ func registerRoutes(
 			})
 		}
 
-		// ========== 工单中心（占位，后续实现）==========
-		v1.GET("/work-orders/pending", func(c *gin.Context) {
-			response.Success(c, gin.H{"list": []interface{}{}, "total": 0})
-		})
+		// ========== 工单中心 ==========
+		orders := v1.Group("/work-orders")
+		{
+			orders.GET("/pending", func(c *gin.Context) {
+				role := c.GetString("role")
+				userID, _ := strconv.ParseUint(c.GetString("user_id"), 10, 64)
+				deptID, _ := strconv.ParseUint(c.GetString("department_id"), 10, 64)
+				list, total, _ := orderSvc.ListByStatus("pending", role, userID, deptID, 1, 20)
+				response.Success(c, gin.H{"list": list, "total": total})
+			})
+			orders.GET("/processing", func(c *gin.Context) {
+				role := c.GetString("role")
+				userID, _ := strconv.ParseUint(c.GetString("user_id"), 10, 64)
+				deptID, _ := strconv.ParseUint(c.GetString("department_id"), 10, 64)
+				list, total, _ := orderSvc.ListByStatus("processing", role, userID, deptID, 1, 20)
+				response.Success(c, gin.H{"list": list, "total": total})
+			})
+			orders.GET("/completed", func(c *gin.Context) {
+				role := c.GetString("role")
+				userID, _ := strconv.ParseUint(c.GetString("user_id"), 10, 64)
+				deptID, _ := strconv.ParseUint(c.GetString("department_id"), 10, 64)
+				list, total, _ := orderSvc.ListByStatus("completed", role, userID, deptID, 1, 20)
+				response.Success(c, gin.H{"list": list, "total": total})
+			})
+			orders.GET("/:id", func(c *gin.Context) {
+				id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+				order, logs, err := orderSvc.GetOrder(id)
+				if err != nil { response.NotFound(c, err.Error()); return }
+				response.Success(c, gin.H{"order": order, "logs": logs})
+			})
+			orders.POST("/:id/accept", func(c *gin.Context) {
+				id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+				userID, _ := strconv.ParseUint(c.GetString("user_id"), 10, 64)
+				order, err := orderSvc.AcceptOrder(id, userID, c.GetString("name"))
+				if err != nil { response.BadRequest(c, err.Error()); return }
+				response.Success(c, order)
+			})
+			orders.POST("/:id/submit", func(c *gin.Context) {
+				id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+				userID, _ := strconv.ParseUint(c.GetString("user_id"), 10, 64)
+				var req struct {
+					Resolution string `json:"resolution"`
+					FormData   string `json:"form_data"`
+					ProofImages string `json:"proof_images"`
+				}
+				c.ShouldBindJSON(&req)
+				order, err := orderSvc.SubmitOrder(id, userID, c.GetString("name"), req.Resolution, req.FormData, req.ProofImages)
+				if err != nil { response.BadRequest(c, err.Error()); return }
+				response.Success(c, order)
+			})
+			orders.POST("/:id/transfer", func(c *gin.Context) {
+				id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+				var req struct {
+					ToUserID   uint64 `json:"transfer_to_user_id"`
+					ToUserName string `json:"transfer_to_user_name"`
+					Reason     string `json:"reason"`
+				}
+				c.ShouldBindJSON(&req)
+				order, err := orderSvc.TransferOrder(id, req.ToUserID, req.ToUserName, c.GetString("name"), req.Reason)
+				if err != nil { response.BadRequest(c, err.Error()); return }
+				response.Success(c, order)
+			})
+		}
 	}
 
 	sugar.Info("路由注册完成")
