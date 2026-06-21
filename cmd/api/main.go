@@ -77,7 +77,7 @@ func main() {
 	engine.Use(gin.Recovery(), gin.Logger())
 
 	// 8. 初始化服务
-	alarmSvc := alarm.New(db, rdb, minioClient, cfg.MinIO.Bucket, cfg.Redis.Prefix, sugar)
+	alarmSvc := alarm.New(db, rdb, minioClient, cfg.MinIO.Bucket, cfg.Redis.Prefix, cfg.CRIP, sugar)
 
 	// 9. 注册路由
 	registerRoutes(engine, alarmSvc, cfg, sugar)
@@ -199,6 +199,22 @@ func registerRoutes(
 				response.Success(c, gin.H{"message": "wechat login — 待实现"})
 			})
 		}
+
+		// ========== 手动补偿（管理员）==========
+		v1.POST("/admin/compensate", func(c *gin.Context) {
+			var req alarm.CompensateRequest
+			if err := c.ShouldBindJSON(&req); err != nil {
+				response.BadRequest(c, "参数错误: start_time 和 end_time 必填")
+				return
+			}
+			result, err := alarmSvc.Compensate(c.Request.Context(), &req)
+			if err != nil {
+				sugar.Errorf("手动补偿失败: %v", err)
+				response.ServerError(c, "手动补偿失败: "+err.Error())
+				return
+			}
+			response.Success(c, result)
+		})
 
 		// ========== 工单中心（占位，后续实现）==========
 		v1.GET("/work-orders/pending", func(c *gin.Context) {

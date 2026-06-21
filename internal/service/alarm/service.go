@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/LeeJiangNan/WDOS/internal/model"
+	"github.com/LeeJiangNan/WDOS/internal/pkg/config"
 	"github.com/minio/minio-go/v7"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
@@ -24,28 +25,35 @@ import (
 
 // Service 报警处理服务
 type Service struct {
-	db       *gorm.DB
-	rdb      *redis.Client
-	minio    *minio.Client
-	bucket   string
-	prefix   string // Redis key 前缀
-	sugar    *zap.SugaredLogger
+	db      *gorm.DB
+	rdb     *redis.Client
+	minio   *minio.Client
+	bucket  string
+	prefix  string // Redis key 前缀
+	cripCfg config.CRIPConfig
+	sugar   *zap.SugaredLogger
 }
 
 // New 创建报警服务
-func New(db *gorm.DB, rdb *redis.Client, minioClient *minio.Client, bucket, redisPrefix string, sugar *zap.SugaredLogger) *Service {
+func New(db *gorm.DB, rdb *redis.Client, minioClient *minio.Client, bucket, redisPrefix string, cripCfg config.CRIPConfig, sugar *zap.SugaredLogger) *Service {
 	return &Service{
-		db:     db,
-		rdb:    rdb,
-		minio:  minioClient,
-		bucket: bucket,
-		prefix: redisPrefix,
-		sugar:  sugar,
+		db:      db,
+		rdb:     rdb,
+		minio:   minioClient,
+		bucket:  bucket,
+		prefix:  redisPrefix,
+		cripCfg: cripCfg,
+		sugar:   sugar,
 	}
 }
 
-// ProcessCallback 处理 CRIP Callback
+// ProcessCallback 处理 CRIP Callback（默认来源: callback）
 func (s *Service) ProcessCallback(ctx context.Context, cb *model.CRIPCallback) (*model.CallbackResponse, error) {
+	return s.ProcessCallbackWithSource(ctx, cb, "callback")
+}
+
+// ProcessCallbackWithSource 处理 CRIP Callback，指定数据来源
+func (s *Service) ProcessCallbackWithSource(ctx context.Context, cb *model.CRIPCallback, source string) (*model.CallbackResponse, error) {
 	dedupKey := s.prefix + "alarm:" + cb.SnowflakeID
 
 	// 1. 去重检查
@@ -103,7 +111,7 @@ func (s *Service) ProcessCallback(ctx context.Context, cb *model.CRIPCallback) (
 		GPS:            cb.GPS,
 		RawJSON:        string(rawJSON),
 		AlarmTimestamp: alarmTime,
-		Source:         "callback",
+		Source:         source,
 	}
 	if err := s.db.Create(raw).Error; err != nil {
 		s.sugar.Errorf("存储原始报警失败: %v", err)
