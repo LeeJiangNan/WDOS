@@ -4,7 +4,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -23,8 +22,8 @@ import (
 	"github.com/LeeJiangNan/WDOS/internal/service/notify"
 	"github.com/LeeJiangNan/WDOS/internal/service/route"
 	"github.com/LeeJiangNan/WDOS/internal/service/schedule"
-	"github.com/LeeJiangNan/WDOS/internal/service/sla"
 	"github.com/LeeJiangNan/WDOS/internal/service/stats"
+	"github.com/LeeJiangNan/WDOS/internal/service/sla"
 	"github.com/LeeJiangNan/WDOS/internal/service/workorder"
 	"github.com/gorilla/websocket"
 	jwtpkg "github.com/LeeJiangNan/WDOS/internal/pkg/jwt"
@@ -95,8 +94,8 @@ func main() {
 	orderSvc := workorder.NewService(db, sugar)
 	notifyHub := notify.NewHub(db, sugar)
 	scheduleSvc := schedule.New(db, sugar)
-	routeEngine := route.NewEngine(db, sugar)
 	statsSvc := stats.New(db, sugar)
+	routeEngine := route.NewEngine(db, sugar)
 
 	// 8.5 初始化种子数据（管理员账号）
 	seedAdmin(db, sugar)
@@ -447,46 +446,6 @@ func registerRoutes(
 			})
 		}
 		// ========== 排班管理 ==========
-		// ========== 统计报表 ==========
-		statsRoutes := v1.Group("/stats")
-		{
-			statsRoutes.GET("/daily-overview", func(c *gin.Context) {
-				date := c.DefaultQuery("date", time.Now().Format("2006-01-02"))
-				response.Success(c, statsSvc.DailyOverview(date))
-			})
-			statsRoutes.GET("/by-algorithm", func(c *gin.Context) {
-				date := c.DefaultQuery("date", time.Now().Format("2006-01-02"))
-				response.Success(c, map[string]interface{}{"items": statsSvc.ByAlgorithm(date)})
-			})
-			statsRoutes.GET("/by-area", func(c *gin.Context) {
-				date := c.DefaultQuery("date", time.Now().Format("2006-01-02"))
-				response.Success(c, map[string]interface{}{"areas": statsSvc.ByArea(date)})
-			})
-			statsRoutes.GET("/process-time-distribution", func(c *gin.Context) {
-				date := c.DefaultQuery("date", time.Now().Format("2006-01-02"))
-				response.Success(c, map[string]interface{}{"buckets": statsSvc.ProcessTimeDist(date)})
-			})
-			statsRoutes.GET("/trend", func(c *gin.Context) { days := 7; fmt.Sscanf(c.DefaultQuery("days", "7"), "%d", &days); response.Success(c, map[string]interface{}{"points": statsSvc.Trend(days)}) })
-			statsRoutes.GET("/user-ranking", func(c *gin.Context) {
-				date := c.DefaultQuery("date", time.Now().Format("2006-01-02"))
-				response.Success(c, map[string]interface{}{"list": statsSvc.UserRanking(date)})
-			})
-		}
-
-		// ========== 区域路由 ==========
-		routing := v1.Group("/routing-rules")
-		{
-			routing.GET("", func(c *gin.Context) {
-				rules := routeEngine.ListRules()
-				response.Success(c, map[string]interface{}{"list": rules})
-			})
-			routing.POST("", func(c *gin.Context) {
-				var rule model.AreaRoutingRule
-				c.ShouldBindJSON(&rule)
-				routeEngine.CreateRule(&rule)
-			})
-		}
-
 		schedules := v1.Group("/schedules")
 		{
 			schedules.GET("", func(c *gin.Context) {
@@ -506,92 +465,8 @@ func registerRoutes(
 				response.Success(c, result)
 			})
 		}
-
-		// my-overview（管理后台 Dashboard）
-		v1.GET("/stats/my-overview", func(c *gin.Context) {
-			response.Success(c, statsSvc.DailyOverview(time.Now().Format("2006-01-02")))
-		})
-		// 权限配置
-		perms := v1.Group("/permissions/roles")
-		{
-			perms.GET("/:role", func(c *gin.Context) {
-				response.Success(c, map[string]interface{}{"role": c.Param("role"), "permissions": []interface{}{}})
-			})
-			perms.PUT("/:role", func(c *gin.Context) {
-				response.Success(c, map[string]interface{}{"updated": true})
-			})
-		}
 	}
 
-
-		// ========== 抑制策略 ==========
-		suppression := v1.Group("/suppression-rules")
-		{
-			suppression.GET("", func(c *gin.Context) {
-				var rules []model.SuppressionRule
-				db.Where("is_active = ?", true).Find(&rules)
-				response.Success(c, map[string]interface{}{"list": rules})
-			})
-			suppression.POST("", func(c *gin.Context) {
-				var rule model.SuppressionRule
-				c.ShouldBindJSON(&rule); rule.IsActive = true
-				db.Create(&rule); response.Success(c, rule)
-			})
-			suppression.PUT("/:id", func(c *gin.Context) {
-				id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-				var rule model.SuppressionRule
-				c.ShouldBindJSON(&rule); rule.ID = id
-				db.Save(&rule); response.Success(c, rule)
-			})
-		}
-		// ========== 用户管理 ==========
-		users := v1.Group("/users")
-		{
-			users.GET("", func(c *gin.Context) {
-				var list []model.User
-				query := db.Model(&model.User{})
-				if role := c.Query("role"); role != "" { query = query.Where("role = ?", role) }
-				query.Find(&list)
-				for i := range list { list[i].Password = "" }
-				response.Success(c, map[string]interface{}{"list": list})
-			})
-			users.POST("", func(c *gin.Context) {
-				var user model.User
-				c.ShouldBindJSON(&user)
-				if user.Password != "" {
-					hashed, _ := auth.HashPassword(user.Password)
-					user.Password = hashed
-				}
-				user.Status = "active"
-				db.Create(&user); user.Password = ""
-				response.Success(c, user)
-			})
-			users.PUT("/:id", func(c *gin.Context) {
-				id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-				var user model.User
-				c.ShouldBindJSON(&user); user.ID = id
-				if user.Password != "" {
-					hashed, _ := auth.HashPassword(user.Password)
-					user.Password = hashed
-				}
-				db.Updates(&user); user.Password = ""
-				response.Success(c, user)
-			})
-		}
-		// my-overview（管理后台 Dashboard）
-		v1.GET("/stats/my-overview", func(c *gin.Context) {
-			response.Success(c, statsSvc.DailyOverview(time.Now().Format("2006-01-02")))
-		})
-		// 权限配置
-		perms := v1.Group("/permissions/roles")
-		{
-			perms.GET("/:role", func(c *gin.Context) {
-				response.Success(c, map[string]interface{}{"role": c.Param("role"), "permissions": []interface{}{}})
-			})
-			perms.PUT("/:role", func(c *gin.Context) {
-				response.Success(c, map[string]interface{}{"updated": true})
-			})
-		}
 
 		// ========== 抑制策略 ==========
 		suppGrp := v1.Group("/suppression-rules")
@@ -647,11 +522,10 @@ func registerRoutes(
 				response.Success(c, user)
 			})
 		}
-		// my-overview（管理后台 Dashboard）
+		// ========== 统计 & 权限（管理后台用）==========
 		v1.GET("/stats/my-overview", func(c *gin.Context) {
 			response.Success(c, statsSvc.DailyOverview(time.Now().Format("2006-01-02")))
 		})
-		// 权限配置
 		permGrp := v1.Group("/permissions/roles")
 		{
 			permGrp.GET("/:role", func(c *gin.Context) {
