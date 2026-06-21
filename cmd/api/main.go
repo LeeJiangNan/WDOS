@@ -17,6 +17,8 @@ import (
 	"github.com/LeeJiangNan/WDOS/internal/pkg/config"
 	"github.com/LeeJiangNan/WDOS/internal/pkg/logger"
 	"github.com/LeeJiangNan/WDOS/internal/service/alarm"
+	"github.com/LeeJiangNan/WDOS/internal/service/auth"
+	jwtpkg "github.com/LeeJiangNan/WDOS/internal/pkg/jwt"
 	miniox "github.com/LeeJiangNan/WDOS/internal/repository/minio"
 	"github.com/LeeJiangNan/WDOS/internal/repository/mysql"
 	redisx "github.com/LeeJiangNan/WDOS/internal/repository/redis"
@@ -77,10 +79,15 @@ func main() {
 	engine.Use(gin.Recovery(), gin.Logger())
 
 	// 8. 初始化服务
+	jwtMgr := jwtpkg.New(cfg.JWT.Secret, cfg.JWT.ExpireSeconds)
+	authSvc := auth.New(db, jwtMgr, cfg.Wechat.AppID, cfg.Wechat.AppSecret, sugar)
 	alarmSvc := alarm.New(db, rdb, minioClient, cfg.MinIO.Bucket, cfg.Redis.Prefix, cfg.CRIP, sugar)
 
+	// 8.5 初始化种子数据（管理员账号）
+	seedAdmin(db, sugar)
+
 	// 9. 注册路由
-	registerRoutes(engine, alarmSvc, cfg, sugar)
+	registerRoutes(engine, alarmSvc, authSvc, jwtMgr, cfg, sugar)
 
 	// 9. 启动 HTTP 服务
 	addr := ":" + cfg.Server.Port
@@ -131,6 +138,8 @@ func autoMigrate(db *gorm.DB) error {
 func registerRoutes(
 	engine *gin.Engine,
 	alarmSvc *alarm.Service,
+	authSvc *auth.Service,
+	jwtMgr *jwtpkg.Manager,
 	cfg *config.Config,
 	sugar *zap.SugaredLogger,
 ) {
@@ -190,13 +199,54 @@ func registerRoutes(
 		})
 
 		// ========== 认证接口 ==========
-		auth := v1.Group("/auth")
+		authGroup := v1.Group("/auth")
 		{
-			auth.POST("/login", func(c *gin.Context) {
-				response.Success(c, gin.H{"message": "login — 待实现"})
+			// 微信小程序登录
+			authGroup.POST("/wechat/login", func(c *gin.Context) {
+				var req auth.WechatLoginRequest
+				if err := c.ShouldBindJSON(&req); err != nil {
+					response.BadRequest(c, "缺少 code 参数")
+					return
+				}
+				result, err := authSvc.WechatLogin(req.Code)
+				if err != nil {
+					sugar.Warnf("微信登录失败: %v", err)
+					response.Unauthorized(c, "登录失败: "+err.Error())
+					return
+				}
+				response.Success(c, result)
 			})
-			auth.POST("/wechat/login", func(c *gin.Context) {
-				response.Success(c, gin.H{"message": "wechat login — 待实现"})
+
+			// Web 管理后台登录
+			authGroup.POST("/login", func(c *gin.Context) {
+				var req auth.WebLoginRequest
+				if err := c.ShouldBindJSON(&req); err != nil {
+					response.BadRequest(c, "缺少 username 和 password")
+					return
+				}
+				result, err := authSvc.WebLogin(req.Username, req.Password)
+				if err != nil {
+					sugar.Warnf("Web 登录失败: %v", err)
+					response.Unauthorized(c, "用户名或密码错误")
+					return
+				}
+				response.Success(c, result)
+			})
+
+			// Token 刷新
+			authGroup.POST("/refresh", func(c *gin.Context) {
+				token := c.GetHeader("Authorization")
+				if token == "" || len(token) < 8 {
+					response.Unauthorized(c, "缺少 token")
+					return
+				}
+				token = token[7:] // 去掉 "Bearer "
+				result, err := authSvc.RefreshToken(token)
+				if err != nil {
+					response.Unauthorized(c, "token 刷新失败: "+err.Error())
+					return
+				}
+				response.Success(c, result)
 			})
 		}
 
@@ -223,4 +273,38 @@ func registerRoutes(
 	}
 
 	sugar.Info("路由注册完成")
+}
+
+// seedAdmin 初始化管理员账号（幂等，已存在则跳过）
+func seedAdmin(db *gorm.DB, sugar *zap.SugaredLogger) {
+	var count int64
+	db.Model(&model.User{}).Where("role = ?", "admin").Count(&count)
+	if count > 0 {
+		return
+	}
+
+	hashedPwd, err := auth.HashPassword("Admin@123")
+	if err != nil {
+		sugar.Errorf("创建管理员密码失败: %v", err)
+		return
+	}
+
+	admin := &model.User{
+		Name:     "admin",
+		Phone:    "00000000000",
+		Password: hashedPwd,
+		Role:     "admin",
+		Status:   "active",
+	}
+	if err := db.Create(admin).Error; err != nil {
+		sugar.Errorf("创建管理员账号失败: %v", err)
+		return
+	}
+
+	// 创建默认部门
+	dept := &model.Department{Name: "管理部"}
+	db.FirstOrCreate(dept, model.Department{Name: "管理部"})
+	db.FirstOrCreate(&model.UserGroup{Name: "管理员组", DepartmentID: dept.ID})
+
+	sugar.Info("已初始化管理员账号: admin / Admin@123")
 }
