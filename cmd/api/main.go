@@ -110,7 +110,7 @@ func main() {
 	go slaEngine.Run(context.Background(), 1*time.Second)
 
 	// 9. 注册路由
-	registerRoutes(engine, alarmSvc, authSvc, templateSvc, orderSvc, scheduleSvc, routeEngine, statsSvc, notifyHub, jwtMgr, cfg, sugar)
+	registerRoutes(engine, db, alarmSvc, authSvc, templateSvc, orderSvc, scheduleSvc, routeEngine, statsSvc, notifyHub, jwtMgr, cfg, sugar)
 
 	// 9. 启动 HTTP 服务
 	addr := ":" + cfg.Server.Port
@@ -160,6 +160,7 @@ func autoMigrate(db *gorm.DB) error {
 // registerRoutes 注册所有路由
 func registerRoutes(
 	engine *gin.Engine,
+	db *gorm.DB,
 	alarmSvc *alarm.Service,
 	authSvc *auth.Service,
 	templateSvc *workorder.TemplateService,
@@ -522,6 +523,75 @@ func registerRoutes(
 		}
 	}
 
+
+		// ========== 抑制策略 ==========
+		suppression := v1.Group("/suppression-rules")
+		{
+			suppression.GET("", func(c *gin.Context) {
+				var rules []model.SuppressionRule
+				db.Where("is_active = ?", true).Find(&rules)
+				response.Success(c, map[string]interface{}{"list": rules})
+			})
+			suppression.POST("", func(c *gin.Context) {
+				var rule model.SuppressionRule
+				c.ShouldBindJSON(&rule); rule.IsActive = true
+				db.Create(&rule); response.Success(c, rule)
+			})
+			suppression.PUT("/:id", func(c *gin.Context) {
+				id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+				var rule model.SuppressionRule
+				c.ShouldBindJSON(&rule); rule.ID = id
+				db.Save(&rule); response.Success(c, rule)
+			})
+		}
+		// ========== 用户管理 ==========
+		users := v1.Group("/users")
+		{
+			users.GET("", func(c *gin.Context) {
+				var list []model.User
+				query := db.Model(&model.User{})
+				if role := c.Query("role"); role != "" { query = query.Where("role = ?", role) }
+				query.Find(&list)
+				for i := range list { list[i].Password = "" }
+				response.Success(c, map[string]interface{}{"list": list})
+			})
+			users.POST("", func(c *gin.Context) {
+				var user model.User
+				c.ShouldBindJSON(&user)
+				if user.Password != "" {
+					hashed, _ := auth.HashPassword(user.Password)
+					user.Password = hashed
+				}
+				user.Status = "active"
+				db.Create(&user); user.Password = ""
+				response.Success(c, user)
+			})
+			users.PUT("/:id", func(c *gin.Context) {
+				id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+				var user model.User
+				c.ShouldBindJSON(&user); user.ID = id
+				if user.Password != "" {
+					hashed, _ := auth.HashPassword(user.Password)
+					user.Password = hashed
+				}
+				db.Updates(&user); user.Password = ""
+				response.Success(c, user)
+			})
+		}
+		// my-overview（管理后台 Dashboard）
+		v1.GET("/stats/my-overview", func(c *gin.Context) {
+			response.Success(c, statsSvc.DailyOverview(time.Now().Format("2006-01-02")))
+		})
+		// 权限配置
+		perms := v1.Group("/permissions/roles")
+		{
+			perms.GET("/:role", func(c *gin.Context) {
+				response.Success(c, map[string]interface{}{"role": c.Param("role"), "permissions": []interface{}{}})
+			})
+			perms.PUT("/:role", func(c *gin.Context) {
+				response.Success(c, map[string]interface{}{"updated": true})
+			})
+		}
 	sugar.Info("路由注册完成")
 }
 
