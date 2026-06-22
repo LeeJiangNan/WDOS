@@ -86,6 +86,23 @@ func main() {
 	engine := gin.New()
 	engine.Use(gin.Recovery(), gin.Logger())
 
+	// CORS — 全局处理，确保 OPTIONS 预检请求不被 Gin 404 拦截
+	engine.Use(func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type,Authorization")
+		c.Header("Access-Control-Max-Age", "86400")
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+		c.Next()
+	})
+	engine.NoRoute(func(c *gin.Context) {
+		if c.Request.Method == "OPTIONS" { return }
+		c.JSON(404, gin.H{"code": 40400, "message": "not found"})
+	})
+
 	// 8. 初始化服务
 	jwtMgr := jwtpkg.New(cfg.JWT.Secret, cfg.JWT.ExpireSeconds)
 	authSvc := auth.New(db, jwtMgr, cfg.Wechat.AppID, cfg.Wechat.AppSecret, sugar)

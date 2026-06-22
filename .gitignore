@@ -28,3 +28,6 @@ deploy/data/
 
 # macOS
 .DS_Store
+miniapp/.dart_tool/
+miniapp/build/
+api

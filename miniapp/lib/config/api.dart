@@ -3,7 +3,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// API 配置
 class ApiConfig {
   // 开发环境
-  static const String baseUrl = 'http://10.0.2.2:8080/api/v1'; // Android 模拟器
+  static const String baseUrl = 'http://localhost:8080/api/v1'; // Android 模拟器
   // static const String baseUrl = 'http://localhost:8080/api/v1'; // iOS 模拟器
   // static const String baseUrl = 'https://wdos.yourmall.com/api/v1'; // 生产
 
