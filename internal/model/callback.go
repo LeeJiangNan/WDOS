@@ -1,8 +1,21 @@
 package model
 
+import "encoding/json"
+
+// FlexString 兼容 JSON 中的字符串和数字类型
+type FlexString string
+
+func (f *FlexString) UnmarshalJSON(data []byte) error {
+	if len(data) >= 2 && data[0] == '"' {
+		return json.Unmarshal(data, (*string)(f))
+	}
+	*f = FlexString(string(data))
+	return nil
+}
+
 // CRIPCallback CRIP Callback 推送的完整 JSON 结构
 type CRIPCallback struct {
-	SnowflakeID    string              `json:"snowflake_id" binding:"required"`
+	SnowflakeID    FlexString          `json:"snowflake_id" binding:"required"`
 	AnalysisJobID  string              `json:"analysis_job_id"`
 	Timestamp      string              `json:"timestamp"`
 	CameraID       int                 `json:"camera_id"`
@@ -17,7 +30,7 @@ type CRIPCallback struct {
 	AlgorithmID    int                 `json:"algorithm_id"`
 	AlgorithmName  string              `json:"algorithm_name"`
 	AlgorithmNameEn string             `json:"algorithm_name_en"`
-	Degree         string              `json:"degree"`
+	Degree         FlexString          `json:"degree"`
 	AlarmPicURL    string              `json:"alarm_pic_url"`
 	AlarmPicData   string              `json:"alarm_pic_data"`
 	AlarmPicName   string              `json:"alarm_pic_name"`
@@ -35,10 +48,10 @@ type CRIPCallback struct {
 
 // CRIPMember 人员信息（人脸识别场景）
 type CRIPMember struct {
-	UserID   string  `json:"user_id"`
-	UserName string  `json:"user_name"`
-	Tag      string  `json:"tag"`
-	Score    float64 `json:"score"`
+	UserID   FlexString `json:"user_id"`
+	UserName string     `json:"user_name"`
+	Tag      string     `json:"tag"`
+	Score    float64    `json:"score"`
 	Photo    string  `json:"photo"`
 	Role     string  `json:"role"`
 }

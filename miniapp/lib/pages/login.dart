@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
 import '../services/api.dart';
 import '../config/api.dart';
+import '../main.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -21,7 +24,12 @@ class _LoginPageState extends State<LoginPage> {
         'password': _pwdCtrl.text,
       });
       await ApiConfig.setToken(data['access_token']);
-      if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const SizedBox()));
+      // 存储用户信息
+      if (data['user'] != null) {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('wdos_user', jsonEncode(data['user']));
+      }
+      if (mounted) Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const MainTabs()));
     } on ApiException catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(e.message)));
     } finally {
@@ -42,7 +50,7 @@ class _LoginPageState extends State<LoginPage> {
             const SizedBox(height: 32),
             TextField(controller: _userCtrl, decoration: const InputDecoration(labelText: '用户名', border: OutlineInputBorder())),
             const SizedBox(height: 16),
-            TextField(controller: _pwdCtrl, obscureText: true, decoration: const InputDecoration(labelText: '密码', border: OutlineInputBorder())),
+            TextField(controller: _pwdCtrl, obscureText: true, decoration: const InputDecoration(labelText: '密码', border: OutlineInputBorder()), onSubmitted: (_) => _login()),
             const SizedBox(height: 24),
             SizedBox(width: double.infinity, height: 48,
               child: FilledButton(onPressed: _loading ? null : _login, child: _loading ? const CircularProgressIndicator() : const Text('登 录', style: TextStyle(fontSize: 16)))),

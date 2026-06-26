@@ -4,16 +4,21 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"bytes"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/minio/minio-go/v7"
 	"github.com/LeeJiangNan/WDOS/internal/model"
 	"github.com/LeeJiangNan/WDOS/internal/pkg/config"
 	"github.com/LeeJiangNan/WDOS/internal/pkg/logger"
@@ -26,6 +31,7 @@ import (
 	"github.com/LeeJiangNan/WDOS/internal/service/sla"
 	"github.com/LeeJiangNan/WDOS/internal/service/workorder"
 	"github.com/gorilla/websocket"
+	"github.com/tencentyun/cos-go-sdk-v5"
 	jwtpkg "github.com/LeeJiangNan/WDOS/internal/pkg/jwt"
 	miniox "github.com/LeeJiangNan/WDOS/internal/repository/minio"
 	"github.com/LeeJiangNan/WDOS/internal/repository/mysql"
@@ -76,7 +82,20 @@ func main() {
 		cfg.MinIO.Bucket, cfg.MinIO.UseSSL,
 	)
 	if err != nil {
-		sugar.Fatalf("连接 MinIO 失败: %v", err)
+		sugar.Errorf("连接 MinIO 失败（图片将使用COS兜底）: %v", err)
+		minioClient = nil
+	}
+
+	// 6.5 连接 COS（图片直存）
+	var cosClient *cos.Client
+	if cfg.COS.Bucket != "" && cfg.COS.SecretID != "" {
+		cosURL, _ := url.Parse(cfg.COS.PublicURL)
+		cosClient = cos.NewClient(&cos.BaseURL{BucketURL: cosURL},
+			&http.Client{Transport: &cos.AuthorizationTransport{
+				SecretID:  cfg.COS.SecretID,
+				SecretKey: cfg.COS.SecretKey,
+			}})
+		sugar.Infof("COS 图片存储已配置: %s", cfg.COS.Bucket)
 	}
 
 	// 7. 初始化 Gin
@@ -86,11 +105,22 @@ func main() {
 	engine := gin.New()
 	engine.Use(gin.Recovery(), gin.Logger())
 
-	// CORS — 全局处理，确保 OPTIONS 预检请求不被 Gin 404 拦截
+	// CORS — debug 全放行，release 读取配置白名单
 	engine.Use(func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
+		origin := c.GetHeader("Origin")
+		if cfg.Server.Mode == "debug" || cfg.Server.CORSOrigins == "*" {
+			c.Header("Access-Control-Allow-Origin", "*")
+		} else if origin != "" && cfg.Server.CORSOrigins != "" {
+			for _, allowed := range strings.Split(cfg.Server.CORSOrigins, ",") {
+				if strings.TrimSpace(allowed) == origin {
+					c.Header("Access-Control-Allow-Origin", origin)
+					break
+				}
+			}
+		}
 		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Content-Type,Authorization")
+		c.Header("Access-Control-Allow-Credentials", "true")
 		c.Header("Access-Control-Max-Age", "86400")
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
@@ -106,27 +136,32 @@ func main() {
 	// 8. 初始化服务
 	jwtMgr := jwtpkg.New(cfg.JWT.Secret, cfg.JWT.ExpireSeconds)
 	authSvc := auth.New(db, jwtMgr, cfg.Wechat.AppID, cfg.Wechat.AppSecret, sugar)
-	alarmSvc := alarm.New(db, rdb, minioClient, cfg.MinIO.Bucket, cfg.Redis.Prefix, cfg.CRIP, sugar)
+	var routeEngine *route.Engine
+	var notifyHub *notify.Hub
+	routeEngine = route.NewEngine(db, sugar)
+	notifyHub = notify.NewHub(db, sugar)
+	alarmSvc := alarm.New(db, rdb, cosClient, cfg.COS, minioClient, cfg.MinIO.Bucket, cfg.Redis.Prefix, cfg.CRIP, sugar, routeEngine, notifyHub)
 	templateSvc := workorder.NewTemplateService(db, sugar)
-	orderSvc := workorder.NewService(db, sugar)
-	notifyHub := notify.NewHub(db, sugar)
+	orderSvc := workorder.NewService(db, sugar, notifyHub, cfg.SLA.AcceptL1Seconds, cfg.SLA.ProcessL1Seconds)
+	notifyHub = notify.NewHub(db, sugar)
 	scheduleSvc := schedule.New(db, sugar)
 	statsSvc := stats.New(db, sugar)
-	routeEngine := route.NewEngine(db, sugar)
+	routeEngine = route.NewEngine(db, sugar)
 
 	// 8.5 初始化种子数据（管理员账号）
-	seedAdmin(db, sugar)
+	adminPwd := cfg.Seed.AdminPassword
+	if adminPwd == "" { adminPwd = "Admin@123" }
+	seedAdmin(db, sugar, adminPwd)
 
 	// 8.6 启动 SLA 引擎
 	slaEngine := sla.New(db,
 		cfg.SLA.AcceptL1Seconds, cfg.SLA.AcceptL2Seconds, cfg.SLA.AcceptL3Seconds,
 		cfg.SLA.ProcessL1Seconds, cfg.SLA.ProcessL2Seconds, cfg.SLA.ProcessL3Seconds,
-		sugar,
-	)
-	go slaEngine.Run(context.Background(), 1*time.Second)
+		sugar, notifyHub)
+	go slaEngine.Run(context.Background(), 30*time.Second)  // 生产30秒扫一次
 
 	// 9. 注册路由
-	registerRoutes(engine, db, alarmSvc, authSvc, templateSvc, orderSvc, scheduleSvc, routeEngine, statsSvc, notifyHub, jwtMgr, cfg, sugar)
+	registerRoutes(engine, db, alarmSvc, authSvc, templateSvc, orderSvc, scheduleSvc, routeEngine, statsSvc, notifyHub, jwtMgr, cfg, sugar, minioClient)
 
 	// 9. 启动 HTTP 服务
 	addr := ":" + cfg.Server.Port
@@ -188,6 +223,7 @@ func registerRoutes(
 	jwtMgr *jwtpkg.Manager,
 	cfg *config.Config,
 	sugar *zap.SugaredLogger,
+	minioClient *minio.Client,
 ) {
 	// 健康检查
 	engine.GET("/health", func(c *gin.Context) {
@@ -212,7 +248,7 @@ func registerRoutes(
 	engine.GET("/ws/notifications", func(c *gin.Context) {
 		conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil { return }
-		notifyHub.Register(conn, 0)
+		notifyHub.Register(conn, 0, "")
 	})
 
 	// API v1
@@ -402,28 +438,66 @@ func registerRoutes(
 		// ========== 工单中心 ==========
 		orders := v1.Group("/work-orders")
 		{
+			orders.GET("", func(c *gin.Context) {
+				role := c.GetString("role")
+				userID, _ := strconv.ParseUint(c.GetString("user_id"), 10, 64)
+				var list []model.WorkOrder
+				q := db.Model(&model.WorkOrder{})
+				if c.Query("locked") == "true" {
+					q = q.Where("is_locked = true")
+				}
+				// handler只看自己
+				if role == "handler" { q = q.Where("assignee_id = ?", userID) }
+				q.Order("id DESC").Limit(200).Find(&list)
+				response.Success(c, gin.H{"list": list, "total": len(list)})
+			})
 			orders.GET("/pending", func(c *gin.Context) {
 				role := c.GetString("role")
 				userID, _ := strconv.ParseUint(c.GetString("user_id"), 10, 64)
 				deptID, _ := strconv.ParseUint(c.GetString("department_id"), 10, 64)
-				list, total, _ := orderSvc.ListByStatus("pending", role, userID, deptID, 1, 20)
+				deptIDs := c.GetString("department_ids")
+			list, total, err := orderSvc.ListByStatus("pending", role, userID, deptID, deptIDs, 1, 20)
+			if err != nil { response.ServerError(c, "查询工单失败: "+err.Error()); return }
 				response.Success(c, gin.H{"list": list, "total": total})
 			})
 			orders.GET("/processing", func(c *gin.Context) {
 				role := c.GetString("role")
 				userID, _ := strconv.ParseUint(c.GetString("user_id"), 10, 64)
 				deptID, _ := strconv.ParseUint(c.GetString("department_id"), 10, 64)
-				list, total, _ := orderSvc.ListByStatus("processing", role, userID, deptID, 1, 20)
+				deptIDs := c.GetString("department_ids")
+			list, total, err := orderSvc.ListByStatus("processing", role, userID, deptID, deptIDs, 1, 20)
+			if err != nil { response.ServerError(c, "查询工单失败: "+err.Error()); return }
 				response.Success(c, gin.H{"list": list, "total": total})
 			})
 			orders.GET("/completed", func(c *gin.Context) {
 				role := c.GetString("role")
 				userID, _ := strconv.ParseUint(c.GetString("user_id"), 10, 64)
 				deptID, _ := strconv.ParseUint(c.GetString("department_id"), 10, 64)
-				list, total, _ := orderSvc.ListByStatus("completed", role, userID, deptID, 1, 20)
+				deptIDs := c.GetString("department_ids")
+			list, total, err := orderSvc.ListByStatus("completed", role, userID, deptID, deptIDs, 1, 20)
+			if err != nil { response.ServerError(c, "查询工单失败: "+err.Error()); return }
 				response.Success(c, gin.H{"list": list, "total": total})
 			})
-			orders.GET("/:id", func(c *gin.Context) {
+			orders.DELETE("/:id", func(c *gin.Context) {
+			id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+			if err := db.Delete(&model.WorkOrder{}, id).Error; err != nil {
+				response.ServerError(c, "删除失败: "+err.Error())
+				return
+			}
+			response.SuccessMsg(c, "已删除", nil)
+		})
+		orders.POST("/batch-delete", func(c *gin.Context) {
+			var req struct {
+				IDs []uint64 `json:"ids"`
+			}
+			if err := c.ShouldBindJSON(&req); err != nil || len(req.IDs) == 0 {
+				response.BadRequest(c, "请提供要删除的工单ID列表")
+				return
+			}
+			db.Where("id IN ?", req.IDs).Delete(&model.WorkOrder{})
+			response.SuccessMsg(c, fmt.Sprintf("已删除 %d 条工单", len(req.IDs)), nil)
+		})
+		orders.GET("/:id", func(c *gin.Context) {
 				id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
 				order, logs, err := orderSvc.GetOrder(id)
 				if err != nil { response.NotFound(c, err.Error()); return }
@@ -461,7 +535,7 @@ func registerRoutes(
 				if err != nil { response.BadRequest(c, err.Error()); return }
 				response.Success(c, order)
 			})
-		}
+	}
 		// ========== 排班管理 ==========
 		schedules := v1.Group("/schedules")
 		{
@@ -505,6 +579,32 @@ func registerRoutes(
 				db.Save(&rule); response.Success(c, rule)
 			})
 		}
+		// ========== 文件上传 ==========
+		v1.POST("/upload", func(c *gin.Context) {
+			file, header, err := c.Request.FormFile("file")
+			if err != nil { response.BadRequest(c, "请选择文件"); return }
+			defer file.Close()
+			data, err := io.ReadAll(file)
+			if err != nil { response.BadRequest(c, "读取文件失败: "+err.Error()); return }
+			objectName := fmt.Sprintf("attachments/%d_%s", time.Now().Unix(), header.Filename)
+			contentType := header.Header.Get("Content-Type")
+			if contentType == "" { contentType = "application/octet-stream" }
+			if minioClient != nil {
+				minioClient.PutObject(c.Request.Context(), "wdos", objectName, bytes.NewReader(data), int64(len(data)), minio.PutObjectOptions{ContentType: contentType})
+			}
+			response.Success(c, gin.H{"url": "/minio/wdos/" + objectName})
+		})
+
+		// ========== MinIO 图片代理 ==========
+		engine.GET("/api/v1/minio/:bucket/*object", func(c *gin.Context) {
+			if minioClient == nil { c.String(404, "MinIO not available"); return }
+			obj, err := minioClient.GetObject(c.Request.Context(), c.Param("bucket"), c.Param("object"), minio.GetObjectOptions{})
+			if err != nil { c.String(404, "not found"); return }
+			defer obj.Close()
+			stat, _ := obj.Stat()
+			c.DataFromReader(200, stat.Size, stat.ContentType, obj, nil)
+		})
+
 		// ========== 用户管理 ==========
 		userGrp := v1.Group("/users")
 		{
@@ -539,9 +639,87 @@ func registerRoutes(
 				response.Success(c, user)
 			})
 		}
+		// ========== 部门管理 ==========
+		v1.GET("/departments", func(c *gin.Context) {
+			var depts []model.Department
+			db.Find(&depts)
+			response.Success(c, gin.H{"list": depts})
+		})
+		v1.POST("/departments", func(c *gin.Context) {
+			var dept model.Department
+			if err := c.ShouldBindJSON(&dept); err != nil { response.BadRequest(c, "参数错误"); return }
+			db.Create(&dept)
+			response.Success(c, dept)
+		})
+
+		// ========== 用户组管理 ==========
+		v1.GET("/user-groups", func(c *gin.Context) {
+			var groups []model.UserGroup
+			db.Find(&groups)
+			response.Success(c, gin.H{"list": groups})
+		})
+
+		// ========== 区域路由规则 ==========
+		v1.GET("/area-routing-rules", func(c *gin.Context) {
+			var rules []model.AreaRoutingRule
+			db.Order("priority DESC").Find(&rules)
+			response.Success(c, gin.H{"list": rules})
+		})
+		v1.POST("/area-routing-rules", func(c *gin.Context) {
+			var rule model.AreaRoutingRule
+			if err := c.ShouldBindJSON(&rule); err != nil { response.BadRequest(c, "参数错误"); return }
+			rule.IsActive = true
+			db.Create(&rule)
+			response.Success(c, rule)
+		})
+		v1.PUT("/area-routing-rules/:id", func(c *gin.Context) {
+			id := c.Param("id")
+			var rule model.AreaRoutingRule
+			if db.First(&rule, id).Error != nil { response.NotFound(c, "不存在"); return }
+			var req map[string]interface{}
+			c.ShouldBindJSON(&req)
+			db.Model(&rule).Updates(req)
+			response.Success(c, rule)
+		})
+		v1.DELETE("/area-routing-rules/:id", func(c *gin.Context) {
+			db.Delete(&model.AreaRoutingRule{}, c.Param("id"))
+			response.SuccessMsg(c, "已删除", nil)
+		})
+
+		// ========== 算法路由规则 ==========
+		v1.GET("/algorithm-routing-rules", func(c *gin.Context) {
+			var rules []model.AlgorithmRoutingRule
+			db.Find(&rules)
+			response.Success(c, gin.H{"list": rules})
+		})
+		v1.POST("/algorithm-routing-rules", func(c *gin.Context) {
+			var rule model.AlgorithmRoutingRule
+			if err := c.ShouldBindJSON(&rule); err != nil { response.BadRequest(c, "参数错误"); return }
+			db.Create(&rule)
+			response.Success(c, rule)
+		})
+		v1.PUT("/algorithm-routing-rules/:id", func(c *gin.Context) {
+			id := c.Param("id")
+			var rule model.AlgorithmRoutingRule
+			if db.First(&rule, id).Error != nil { response.NotFound(c, "不存在"); return }
+			var req map[string]interface{}
+			c.ShouldBindJSON(&req)
+			db.Model(&rule).Updates(req)
+			response.Success(c, rule)
+		})
+		v1.DELETE("/algorithm-routing-rules/:id", func(c *gin.Context) {
+			db.Delete(&model.AlgorithmRoutingRule{}, c.Param("id"))
+			response.SuccessMsg(c, "已删除", nil)
+		})
+
 		// ========== 统计 & 权限（管理后台用）==========
 		v1.GET("/stats/my-overview", func(c *gin.Context) {
 			response.Success(c, statsSvc.DailyOverview(time.Now().Format("2006-01-02")))
+		})
+		v1.GET("/stats/trend", func(c *gin.Context) {
+			days, _ := strconv.Atoi(c.DefaultQuery("days", "7"))
+			if days < 1 { days = 7 }
+			response.Success(c, gin.H{"list": statsSvc.Trend(days)})
 		})
 		permGrp := v1.Group("/permissions/roles")
 		{
@@ -556,14 +734,14 @@ func registerRoutes(
 }
 
 // seedAdmin 初始化管理员账号（幂等，已存在则跳过）
-func seedAdmin(db *gorm.DB, sugar *zap.SugaredLogger) {
+func seedAdmin(db *gorm.DB, sugar *zap.SugaredLogger, password string) {
 	var count int64
 	db.Model(&model.User{}).Where("role = ?", "admin").Count(&count)
 	if count > 0 {
 		return
 	}
 
-	hashedPwd, err := auth.HashPassword("Admin@123")
+	hashedPwd, err := auth.HashPassword(password)
 	if err != nil {
 		sugar.Errorf("创建管理员密码失败: %v", err)
 		return

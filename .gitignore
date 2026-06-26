@@ -13,6 +13,7 @@ vendor/
 
 # 配置（敏感信息）
 config/config.local.yaml
+scf/env.json
 
 # 数据
 /tmp/
@@ -31,3 +32,11 @@ deploy/data/
 miniapp/.dart_tool/
 miniapp/build/
 api
+
+# 编译产物
+wdos-server
+wdos-server-linux.gz
+scf/scf.zip
+scf/scf_bootstrap
+tools/poller/wdos-poller.gz
+web/dist.tar.gz

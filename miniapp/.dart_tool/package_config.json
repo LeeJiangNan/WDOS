@@ -213,9 +213,9 @@
     },
     {
       "name": "path_provider_linux",
-      "rootUri": "file:///Users/gmac/.pub-cache/hosted/pub.flutter-io.cn/path_provider_linux-2.2.1",
+      "rootUri": "file:///Users/gmac/.pub-cache/hosted/pub.flutter-io.cn/path_provider_linux-2.2.2",
       "packageUri": "lib/",
-      "languageVersion": "2.19"
+      "languageVersion": "3.10"
     },
     {
       "name": "path_provider_platform_interface",

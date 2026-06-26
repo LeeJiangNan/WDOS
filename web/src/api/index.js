@@ -2,8 +2,9 @@ import axios from 'axios'
 import { ElMessage } from 'element-plus'
 import router from '../router'
 
+// API 在后端 9090 端口，前端在 5173，需要跨域
 const api = axios.create({
-  baseURL: '/api/v1',
+  baseURL: window.location.protocol + '//' + window.location.hostname + ':9090/api/v1',
   timeout: 10000
 })
 

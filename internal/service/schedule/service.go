@@ -3,6 +3,7 @@ package schedule
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/LeeJiangNan/WDOS/internal/model"
 	"go.uber.org/zap"
@@ -35,35 +36,45 @@ type ShiftReq struct {
 	Area       string   `json:"area"`
 }
 
-// SetSchedule 设置某天排班（覆盖）
+// SetSchedule 设置某天排班（覆盖，事务保护）
 func (s *Service) SetSchedule(req *SetScheduleReq) ([]model.StaffSchedule, error) {
-	// 先删除这天的已有排班
-	s.db.Where("shift_date = ? AND shift_type IN ?", req.Date, []string{"day", "night"}).Delete(&model.StaffSchedule{})
-
 	var created []model.StaffSchedule
-	for _, shift := range req.Shifts {
-		for _, uid := range shift.UserIDs {
-			sch := model.StaffSchedule{
-				UserID:    uid,
-				ShiftDate: req.Date,
-				ShiftType: shift.Type,
-				Area:      shift.Area,
-				IsOnCall:  uid == shift.OnCallUserID,
-			}
-			s.db.Create(&sch)
-			created = append(created, sch)
+	err := s.db.Transaction(func(tx *gorm.DB) error {
+		// 先删除这天的已有排班
+		if err := tx.Where("shift_date = ? AND shift_type IN ?", req.Date, []string{"day", "night"}).Delete(&model.StaffSchedule{}).Error; err != nil {
+			return err
 		}
+		for _, shift := range req.Shifts {
+			for _, uid := range shift.UserIDs {
+				sch := model.StaffSchedule{
+					UserID:    uid,
+					ShiftDate: req.Date,
+					ShiftType: shift.Type,
+					Area:      shift.Area,
+					IsOnCall:  uid == shift.OnCallUserID,
+				}
+				if err := tx.Create(&sch).Error; err != nil {
+					return err
+				}
+				created = append(created, sch)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("设置排班失败: %w", err)
 	}
 	s.sugar.Infof("排班已设置: %s, %d条", req.Date, len(created))
 	return created, nil
 }
 
-// GetByDate 按日期查排班
+// GetByDate 按日期查排班（支持按部门过滤）
 func (s *Service) GetByDate(date string, departmentID uint64) (map[string][]model.StaffSchedule, error) {
 	var schedules []model.StaffSchedule
-	query := s.db.Where("shift_date = ?", date)
+	query := s.db.Table("staff_schedule").Where("shift_date = ?", date)
 	if departmentID > 0 {
-		// 按部门过滤需要 join users 表，这里简化处理
+		query = query.Joins("JOIN users ON users.id = staff_schedule.user_id").
+			Where("users.department_id = ?", departmentID)
 	}
 	query.Find(&schedules)
 
@@ -74,32 +85,39 @@ func (s *Service) GetByDate(date string, departmentID uint64) (map[string][]mode
 	return result, nil
 }
 
-// BatchSet 批量排班
+// BatchSet 批量排班（事务保护）
 func (s *Service) BatchSet(startDate, endDate string, departmentID uint64, dayUserIDs, nightUserIDs []uint64, onCallDay, onCallNight uint64) error {
-	// 删除区间内已有排班
-	s.db.Where("shift_date >= ? AND shift_date <= ?", startDate, endDate).Delete(&model.StaffSchedule{})
-
-	count := 0
-	current := startDate
-	for current <= endDate {
-		for _, uid := range dayUserIDs {
-			s.db.Create(&model.StaffSchedule{
-				UserID: uid, ShiftDate: current, ShiftType: "day",
-				IsOnCall: uid == onCallDay,
-			})
-			count++
+	return s.db.Transaction(func(tx *gorm.DB) error {
+		// 删除区间内已有排班
+		if err := tx.Where("shift_date >= ? AND shift_date <= ?", startDate, endDate).Delete(&model.StaffSchedule{}).Error; err != nil {
+			return err
 		}
-		for _, uid := range nightUserIDs {
-			s.db.Create(&model.StaffSchedule{
-				UserID: uid, ShiftDate: current, ShiftType: "night",
-				IsOnCall: uid == onCallNight,
-			})
-			count++
+		count := 0
+		current := startDate
+		for current <= endDate {
+			for _, uid := range dayUserIDs {
+				if err := tx.Create(&model.StaffSchedule{
+					UserID: uid, ShiftDate: current, ShiftType: "day",
+					IsOnCall: uid == onCallDay,
+				}).Error; err != nil {
+					return err
+				}
+				count++
+			}
+			for _, uid := range nightUserIDs {
+				if err := tx.Create(&model.StaffSchedule{
+					UserID: uid, ShiftDate: current, ShiftType: "night",
+					IsOnCall: uid == onCallNight,
+				}).Error; err != nil {
+					return err
+				}
+				count++
+			}
+			current = nextDay(current)
 		}
-		current = nextDay(current)
-	}
-	s.sugar.Infof("批量排班: %s~%s, %d条", startDate, endDate, count)
-	return nil
+		s.sugar.Infof("批量排班: %s~%s, %d条", startDate, endDate, count)
+		return nil
+	})
 }
 
 // GetOnCallUser 获取某日某班的值班人
@@ -114,13 +132,9 @@ func (s *Service) GetOnCallUser(date, shiftType, area string) (uint64, error) {
 }
 
 func nextDay(date string) string {
-	var y, m, d int
-	fmt.Sscanf(date, "%d-%d-%d", &y, &m, &d)
-	d++
-	// 简化处理，实际项目用 time.Parse
-	if d > 28 {
-		d = 1; m++
-		if m > 12 { m = 1; y++ }
+	t, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return date
 	}
-	return fmt.Sprintf("%04d-%02d-%02d", y, m, d)
+	return t.AddDate(0, 0, 1).Format("2006-01-02")
 }

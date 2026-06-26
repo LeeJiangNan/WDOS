@@ -76,8 +76,9 @@ func (s *Service) Compensate(ctx context.Context, req *CompensateRequest) (*Comp
 
 		s.sugar.Infof("补偿进度: 第%d页, 本页%d条, 累计%d/%d条", page, len(alarms), len(allAlarms), total)
 
-		if len(alarms) < pageSize {
-			break // 最后一页
+		// 用 total 判断是否已拉完所有数据（避免末页恰好满 pageSize 时多发空请求）
+		if len(allAlarms) >= total {
+			break
 		}
 		page++
 	}
@@ -87,13 +88,13 @@ func (s *Service) Compensate(ctx context.Context, req *CompensateRequest) (*Comp
 	skippedCount := 0
 
 	for _, alarm := range allAlarms {
-		if alarm.SnowflakeID == "" {
+		if string(alarm.SnowflakeID) == "" {
 			skippedCount++
 			continue
 		}
 
 		// Redis 去重检查
-		dedupKey := s.prefix + "alarm:" + alarm.SnowflakeID
+		dedupKey := s.prefix + "alarm:" + string(alarm.SnowflakeID)
 		ok, err := s.rdb.SetNX(ctx, dedupKey, "1", 24*time.Hour).Result()
 		if err != nil || !ok {
 			skippedCount++
@@ -103,8 +104,8 @@ func (s *Service) Compensate(ctx context.Context, req *CompensateRequest) (*Comp
 		// 调用 ProcessCallback 处理，标记来源为 compensation
 		_, err = s.ProcessCallbackWithSource(ctx, &alarm, "compensation")
 		if err != nil {
-			s.sugar.Warnf("补偿处理失败: snowflake=%s, err=%v", alarm.SnowflakeID, err)
-			s.rdb.Del(ctx, dedupKey)
+			s.sugar.Warnf("补偿处理失败(保留去重标记，避免重复入库): snowflake=%s, err=%v", string(alarm.SnowflakeID), err)
+			// 保留 dedupKey，防止失败报警被重复拉取入库
 			continue
 		}
 		newCount++

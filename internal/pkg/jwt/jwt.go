@@ -3,6 +3,8 @@ package jwt
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	jwtlib "github.com/golang-jwt/jwt/v5"
@@ -10,10 +12,11 @@ import (
 
 // Claims JWT payload
 type Claims struct {
-	UserID       uint64 `json:"user_id"`
-	Role         string `json:"role"`
-	DepartmentID uint64 `json:"department_id"`
-	GroupID      uint64 `json:"group_id"`
+	UserID        uint64 `json:"user_id"`
+	Role          string `json:"role"`
+	DepartmentID  uint64 `json:"department_id"`  // 主部门
+	DepartmentIDs string `json:"department_ids"` // 所有部门ID，逗号分隔
+	GroupID       uint64 `json:"group_id"`
 	jwtlib.RegisteredClaims
 }
 
@@ -32,15 +35,26 @@ func New(secret string, expireSeconds int) *Manager {
 }
 
 // Generate 生成 token
-func (m *Manager) Generate(userID uint64, role string, departmentID, groupID uint64) (string, int, error) {
+func (m *Manager) Generate(userID uint64, role string, departmentID, groupID uint64, departmentIDs []uint64) (string, int, error) {
 	now := time.Now()
 	exp := now.Add(time.Duration(m.expireSeconds) * time.Second)
 
+	// 将多部门ID打包为逗号分隔字符串
+	deptIDStrs := make([]string, len(departmentIDs))
+	for i, id := range departmentIDs {
+		deptIDStrs[i] = strconv.FormatUint(id, 10)
+	}
+	deptIDsJoined := strings.Join(deptIDStrs, ",")
+	if deptIDsJoined == "" {
+		deptIDsJoined = strconv.FormatUint(departmentID, 10)
+	}
+
 	claims := &Claims{
-		UserID:       userID,
-		Role:         role,
-		DepartmentID: departmentID,
-		GroupID:      groupID,
+		UserID:        userID,
+		Role:          role,
+		DepartmentID:  departmentID,
+		DepartmentIDs: deptIDsJoined,
+		GroupID:       groupID,
 		RegisteredClaims: jwtlib.RegisteredClaims{
 			ExpiresAt: jwtlib.NewNumericDate(exp),
 			IssuedAt:  jwtlib.NewNumericDate(now),
@@ -77,17 +91,22 @@ func (m *Manager) Parse(tokenStr string) (*Claims, error) {
 	return claims, nil
 }
 
-// Refresh 刷新 token（在旧 token 过期前调用）
+// Refresh 刷新 token
 func (m *Manager) Refresh(oldTokenStr string) (string, int, error) {
 	claims, err := m.Parse(oldTokenStr)
 	if err != nil {
 		return "", 0, fmt.Errorf("旧 token 无效，无法刷新: %w", err)
 	}
 
-	// 有效期剩余超过 1 天才允许刷新
 	if time.Until(claims.ExpiresAt.Time) > 24*time.Hour {
 		return "", 0, fmt.Errorf("token 有效期余量充足，无需刷新")
 	}
 
-	return m.Generate(claims.UserID, claims.Role, claims.DepartmentID, claims.GroupID)
+	var deptIDs []uint64
+	for _, s := range strings.Split(claims.DepartmentIDs, ",") {
+		if id, err := strconv.ParseUint(strings.TrimSpace(s), 10, 64); err == nil {
+			deptIDs = append(deptIDs, id)
+		}
+	}
+	return m.Generate(claims.UserID, claims.Role, claims.DepartmentID, claims.GroupID, deptIDs)
 }

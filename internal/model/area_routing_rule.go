@@ -1,6 +1,5 @@
 package model
 
-import "time"
 
 // AreaRoutingRule 区域路由规则
 type AreaRoutingRule struct {
@@ -12,7 +11,7 @@ type AreaRoutingRule struct {
 	BackupGroupID       uint64    `gorm:"comment:备用处理人组" json:"backup_group_id"`
 	Priority            int       `gorm:"default:0;comment:优先级" json:"priority"`
 	IsActive            bool      `gorm:"default:true;comment:是否启用" json:"is_active"`
-	CreatedAt           time.Time `gorm:"autoCreateTime" json:"created_at"`
+	CreatedAt           LocalTime `gorm:"autoCreateTime" json:"created_at"`
 }
 
 func (AreaRoutingRule) TableName() string { return "area_routing_rule" }

@@ -1,6 +1,5 @@
 package model
 
-import "time"
 
 // WorkflowDefinition 工作流定义
 type WorkflowDefinition struct {
@@ -12,8 +11,8 @@ type WorkflowDefinition struct {
 	Transitions  string    `gorm:"type:json;comment:状态流转规则" json:"transitions"`
 	SLAConfig    string    `gorm:"type:json;comment:SLA超时配置" json:"sla_config"`
 	IsActive     bool      `gorm:"default:true;comment:是否启用" json:"is_active"`
-	CreatedAt    time.Time `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt    time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+	CreatedAt    LocalTime `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt    LocalTime `gorm:"autoUpdateTime" json:"updated_at"`
 }
 
 func (WorkflowDefinition) TableName() string { return "workflow_definition" }

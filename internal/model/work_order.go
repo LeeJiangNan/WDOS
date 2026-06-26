@@ -1,6 +1,5 @@
 package model
 
-import "time"
 
 // WorkOrder 工单主表
 type WorkOrder struct {
@@ -15,26 +14,28 @@ type WorkOrder struct {
 	DepartmentID        uint64     `gorm:"index:idx_department;comment:负责部门" json:"department_id"`
 	DepartmentName      string     `gorm:"size:50" json:"department_name"`
 	AssigneeID          uint64     `gorm:"index:idx_assignee;comment:当前处理人" json:"assignee_id"`
+	AssigneeName        string     `gorm:"size:50" json:"assignee_name"`
 	AccepterID          uint64     `gorm:"comment:接单人" json:"accepter_id"`
 	AccepterName        string     `gorm:"size:50" json:"accepter_name"`
 	DuplicateCount      int        `gorm:"default:1;comment:抑制累计次数" json:"duplicate_count"`
 	SuppressedAlarmCount int       `gorm:"default:0;comment:锁定期被抑制的报警数" json:"suppressed_alarm_count"`
 	IsLocked            bool       `gorm:"default:false;index:idx_locked;comment:是否处于锁定状态" json:"is_locked"`
-	LockedAt            *time.Time `gorm:"comment:锁定时间" json:"locked_at"`
+	LockedAt            *LocalTime `gorm:"comment:锁定时间" json:"locked_at"`
 	LockMode            string     `gorm:"type:enum('none','algo_only','full_camera');default:none;comment:锁定模式" json:"lock_mode"`
 	EscalatedLevel      int        `gorm:"default:0;comment:上报层级" json:"escalated_level"`
-	SlaAcceptDeadline   *time.Time `gorm:"comment:接单SLA截止" json:"sla_accept_deadline"`
-	SlaProcessDeadline  *time.Time `gorm:"comment:处理SLA截止" json:"sla_process_deadline"`
+	SlaAcceptDeadline   *LocalTime `gorm:"comment:接单SLA截止" json:"sla_accept_deadline"`
+	SlaProcessDeadline  *LocalTime `gorm:"comment:处理SLA截止" json:"sla_process_deadline"`
 	FormData            *string    `gorm:"type:json;comment:表单数据" json:"form_data"`
 	Resolution          string     `gorm:"type:text;comment:处理结果" json:"resolution"`
 	CameraName          string     `gorm:"size:100" json:"camera_name"`
 	AlgorithmName       string     `gorm:"size:50" json:"algorithm_name"`
 	AlarmPicURL         string     `gorm:"size:500" json:"alarm_pic_url"`
-	AlarmTime           time.Time  `json:"alarm_time"`
-	CreatedAt           time.Time  `gorm:"autoCreateTime;index:idx_created" json:"created_at"`
-	AcceptedAt          *time.Time `json:"accepted_at"`
-	CompletedAt         *time.Time `json:"completed_at"`
-	ClosedAt            *time.Time `json:"closed_at"`
+	AlarmTime           LocalTime  `json:"alarm_time"`
+	CreatedAt           LocalTime  `gorm:"autoCreateTime;index:idx_created" json:"created_at"`
+	AcceptedAt          *LocalTime `json:"accepted_at"`
+	TransferredAt       *LocalTime `json:"transferred_at"`
+	CompletedAt         *LocalTime `json:"completed_at"`
+	ClosedAt            *LocalTime `json:"closed_at"`
 }
 
 func (WorkOrder) TableName() string { return "work_order" }

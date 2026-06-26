@@ -3,9 +3,11 @@ package sla
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/LeeJiangNan/WDOS/internal/model"
+	"github.com/LeeJiangNan/WDOS/internal/service/notify"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -18,10 +20,11 @@ type Engine struct {
 	acceptL1, acceptL2, acceptL3 int
 	// 处理超时阈值
 	processL1, processL2, processL3 int
+	notifyHub *notify.Hub
 }
 
 // New 创建 SLA 引擎
-func New(db *gorm.DB, acceptL1, acceptL2, acceptL3, processL1, processL2, processL3 int, sugar *zap.SugaredLogger) *Engine {
+func New(db *gorm.DB, acceptL1, acceptL2, acceptL3, processL1, processL2, processL3 int, sugar *zap.SugaredLogger, notifyHub *notify.Hub) *Engine {
 	return &Engine{
 		db:        db,
 		sugar:     sugar,
@@ -31,6 +34,7 @@ func New(db *gorm.DB, acceptL1, acceptL2, acceptL3, processL1, processL2, proces
 		processL1: processL1,
 		processL2: processL2,
 		processL3: processL3,
+		notifyHub: notifyHub,
 	}
 }
 
@@ -66,20 +70,25 @@ func (e *Engine) Run(ctx context.Context, interval time.Duration) {
 func (e *Engine) scan() {
 	now := time.Now()
 
-	// 1. 扫描待接单超时
+	// 1. 扫描待接单超时（不限时间窗口，所有未处理工单均参与扫描）
 	var pendingOrders []model.WorkOrder
 	e.db.Where("status = ?", "pending").Find(&pendingOrders)
 	for _, o := range pendingOrders {
-		seconds := int(now.Sub(o.CreatedAt).Seconds())
+		// 转交的工单以 transferred_at 为新计时起点，否则用创建时间
+		startTime := o.CreatedAt.Time()
+		if o.TransferredAt != nil {
+			startTime = o.TransferredAt.Time()
+		}
+		seconds := int(now.Sub(startTime).Seconds())
 		e.checkAccept(o, seconds)
 	}
 
-	// 2. 扫描处理中超时
+	// 2. 扫描处理中超时（不限时间窗口）
 	var processingOrders []model.WorkOrder
 	e.db.Where("status = ?", "processing").Find(&processingOrders)
 	for _, o := range processingOrders {
 		if o.AcceptedAt != nil {
-			seconds := int(now.Sub(*o.AcceptedAt).Seconds())
+			seconds := int(now.Sub(o.AcceptedAt.Time()).Seconds())
 			e.checkProcess(o, seconds)
 		}
 	}
@@ -88,26 +97,30 @@ func (e *Engine) scan() {
 func (e *Engine) checkAccept(order model.WorkOrder, elapsed int) {
 	prevLevel := order.EscalatedLevel
 
-	switch {
-	case elapsed >= e.acceptL3 && prevLevel < 3:
-		e.escalate(order, "accept", 3, e.acceptL3, elapsed)
-	case elapsed >= e.acceptL2 && prevLevel < 2:
-		e.escalate(order, "accept", 2, e.acceptL2, elapsed)
-	case elapsed >= e.acceptL1 && prevLevel < 1:
+	// 逐级触发，避免 switch 跳级（如 elapsed 同时满足 L1/L2/L3 时只触发 L3）
+	if elapsed >= e.acceptL1 && prevLevel < 1 {
 		e.escalate(order, "accept", 1, e.acceptL1, elapsed)
+	}
+	if elapsed >= e.acceptL2 && prevLevel < 2 {
+		e.escalate(order, "accept", 2, e.acceptL2, elapsed)
+	}
+	if elapsed >= e.acceptL3 && prevLevel < 3 {
+		e.escalate(order, "accept", 3, e.acceptL3, elapsed)
 	}
 }
 
 func (e *Engine) checkProcess(order model.WorkOrder, elapsed int) {
 	prevLevel := order.EscalatedLevel
 
-	switch {
-	case elapsed >= e.processL3 && prevLevel < 3:
-		e.escalate(order, "process", 3, e.processL3, elapsed)
-	case elapsed >= e.processL2 && prevLevel < 2:
-		e.escalate(order, "process", 2, e.processL2, elapsed)
-	case elapsed >= e.processL1 && prevLevel < 1:
+	// 逐级触发，避免 switch 跳级
+	if elapsed >= e.processL1 && prevLevel < 1 {
 		e.escalate(order, "process", 1, e.processL1, elapsed)
+	}
+	if elapsed >= e.processL2 && prevLevel < 2 {
+		e.escalate(order, "process", 2, e.processL2, elapsed)
+	}
+	if elapsed >= e.processL3 && prevLevel < 3 {
+		e.escalate(order, "process", 3, e.processL3, elapsed)
 	}
 }
 
@@ -139,7 +152,17 @@ func (e *Engine) escalate(order model.WorkOrder, stage string, level, threshold,
 		Comment:      buildEscalationComment(stage, level, levelNames[level], threshold, elapsed),
 	})
 
-	// TODO 阶段 2.9: 调用通知服务推送
+	// 推送 WebSocket 通知
+	if e.notifyHub != nil {
+		e.notifyHub.Escalation(notify.EscalationPayload{
+			OrderID:     order.ID,
+			OrderNo:     order.OrderNo,
+			Stage:       stage,
+			Level:       level,
+			LevelName:   levelNames[level],
+			OverSeconds: elapsed - threshold,
+		})
+	}
 }
 
 func buildEscalationComment(stage string, level int, name string, threshold, elapsed int) string {
@@ -147,15 +170,5 @@ func buildEscalationComment(stage string, level int, name string, threshold, ela
 	if stage == "process" {
 		stageName = "处理"
 	}
-	return stageName + "超时" + itoa(level) + "级上报: " + name + ", 阈值" + itoa(threshold) + "秒, 已超" + itoa(elapsed) + "秒"
-}
-
-func itoa(n int) string {
-	if n == 0 { return "0" }
-	s := ""
-	for n > 0 {
-		s = string(rune('0'+n%10)) + s
-		n /= 10
-	}
-	return s
+	return stageName + "超时" + strconv.Itoa(level) + "级上报: " + name + ", 阈值" + strconv.Itoa(threshold) + "秒, 已超" + strconv.Itoa(elapsed) + "秒"
 }

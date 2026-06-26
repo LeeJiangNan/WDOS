@@ -3,22 +3,32 @@ package workorder
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/LeeJiangNan/WDOS/internal/model"
+	"github.com/LeeJiangNan/WDOS/internal/service/notify"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
 // Service 工单服务
 type Service struct {
-	db    *gorm.DB
-	sugar *zap.SugaredLogger
+	db                  *gorm.DB
+	sugar               *zap.SugaredLogger
+	notifyHub           *notify.Hub
+	acceptDeadlineSec   int // 接单 SLA 截止时间（秒），从配置读取
+	processDeadlineSec  int // 处理 SLA 截止时间（秒），从配置读取
 }
 
 // NewService 创建工单服务
-func NewService(db *gorm.DB, sugar *zap.SugaredLogger) *Service {
-	return &Service{db: db, sugar: sugar}
+func NewService(db *gorm.DB, sugar *zap.SugaredLogger, notifyHub *notify.Hub, acceptDeadlineSec, processDeadlineSec int) *Service {
+	return &Service{
+		db: db, sugar: sugar, notifyHub: notifyHub,
+		acceptDeadlineSec:  acceptDeadlineSec,
+		processDeadlineSec: processDeadlineSec,
+	}
 }
 
 // ========== 工单生成 ==========
@@ -48,14 +58,14 @@ func (s *Service) CreateOrder(req *CreateOrderReq) (*model.WorkOrder, error) {
 		CameraName:    req.CameraName,
 		AlgorithmName: req.AlgorithmName,
 		AlarmPicURL:   req.AlarmPicURL,
-		AlarmTime:     req.AlarmTime,
+		AlarmTime: model.LocalTime{T: req.AlarmTime},
 		DuplicateCount: 1,
 		FormData:      &defaultForm,
 	}
 
-	// 设置接单 SLA 截止时间
-	acceptDeadline := time.Now().Add(30 * time.Second)
-	order.SlaAcceptDeadline = &acceptDeadline
+	// 设置接单 SLA 截止时间（从配置读取）
+	acceptDeadline := time.Now().Add(time.Duration(s.acceptDeadlineSec) * time.Second)
+	order.SlaAcceptDeadline = model.LocalTime{T: acceptDeadline}.Ptr()
 
 	if err := s.db.Create(order).Error; err != nil {
 		return nil, fmt.Errorf("创建工单失败: %w", err)
@@ -117,16 +127,15 @@ func (s *Service) AcceptOrder(orderID, userID uint64, userName string) (*model.W
 		return nil, fmt.Errorf("工单状态不允许接单: %s", order.Status)
 	}
 
-	now := time.Now()
 	order.Status = "processing"
 	order.AccepterID = userID
 	order.AccepterName = userName
 	order.AssigneeID = userID
-	order.AcceptedAt = &now
+	order.AcceptedAt = model.LocalTime{T: time.Now()}.Ptr()
 
-	// 设置处理 SLA 截止时间
-	processDeadline := now.Add(150 * time.Second)
-	order.SlaProcessDeadline = &processDeadline
+	// 设置处理 SLA 截止时间（从配置读取）
+	processDeadline := time.Now().Add(time.Duration(s.processDeadlineSec) * time.Second)
+	order.SlaProcessDeadline = model.LocalTime{T: processDeadline}.Ptr()
 
 	if err := s.db.Save(&order).Error; err != nil {
 		return nil, fmt.Errorf("接单失败: %w", err)
@@ -134,6 +143,10 @@ func (s *Service) AcceptOrder(orderID, userID uint64, userName string) (*model.W
 
 	s.addLog(order.ID, userID, userName, "pending", "processing", "接单")
 	s.sugar.Infof("工单已接单: %s by %s", order.OrderNo, userName)
+
+	if s.notifyHub != nil {
+		s.notifyHub.OrderAccepted(order.ID, order.OrderNo, userName)
+	}
 	return &order, nil
 }
 
@@ -147,13 +160,14 @@ func (s *Service) SubmitOrder(orderID, userID uint64, userName, resolution strin
 		return nil, fmt.Errorf("工单状态不允许提交: %s", order.Status)
 	}
 
-	now := time.Now()
 	order.Status = "completed"
 	order.Resolution = resolution
 	if formData != "" {
 		order.FormData = &formData
 	}
-	order.CompletedAt = &now
+	order.CompletedAt = model.LocalTime{T: time.Now()}.Ptr()
+	order.IsLocked = false   // 工单完成，解除锁定
+	order.LockMode = "none"
 
 	if err := s.db.Save(&order).Error; err != nil {
 		return nil, fmt.Errorf("提交失败: %w", err)
@@ -161,6 +175,10 @@ func (s *Service) SubmitOrder(orderID, userID uint64, userName, resolution strin
 
 	s.addLog(order.ID, userID, userName, "processing", "completed", resolution)
 	s.sugar.Infof("工单已完成: %s by %s", order.OrderNo, userName)
+
+	if s.notifyHub != nil {
+		s.notifyHub.OrderCompleted(order.ID, order.OrderNo)
+	}
 	return &order, nil
 }
 
@@ -170,11 +188,25 @@ func (s *Service) TransferOrder(orderID, toUserID uint64, toUserName, fromUser, 
 	if err := s.db.First(&order, orderID).Error; err != nil {
 		return nil, fmt.Errorf("工单不存在: id=%d", orderID)
 	}
+	// 校验：仅 processing 状态可转交
+	if order.Status != "processing" {
+		return nil, fmt.Errorf("仅处理中的工单可转交，当前状态: %s", order.Status)
+	}
+	// 校验：目标用户存在
+	var targetUser model.User
+	if err := s.db.First(&targetUser, toUserID).Error; err != nil {
+		return nil, fmt.Errorf("目标用户不存在: id=%d", toUserID)
+	}
 
+	now := time.Now()
 	order.Status = "pending"
 	order.AssigneeID = toUserID
 	order.AccepterID = 0
 	order.AccepterName = ""
+	order.EscalatedLevel = 0    // 重置上报层级，新处理人从头计时
+	order.TransferredAt = model.LocalTime{T: now}.Ptr() // 记录转交时间，SLA 引擎以此为新计时起点
+	order.IsLocked = false      // 解锁，恢复报警生成
+	order.LockMode = "none"
 
 	if err := s.db.Save(&order).Error; err != nil {
 		return nil, fmt.Errorf("转交失败: %w", err)
@@ -188,7 +220,7 @@ func (s *Service) TransferOrder(orderID, toUserID uint64, toUserName, fromUser, 
 // ========== 工单查询 ==========
 
 // ListByStatus 按状态查询工单（角色限定）
-func (s *Service) ListByStatus(status, role string, userID, departmentID uint64, page, size int) ([]model.WorkOrder, int64, error) {
+func (s *Service) ListByStatus(status, role string, userID, departmentID uint64, departmentIDs string, page, size int) ([]model.WorkOrder, int64, error) {
 	var list []model.WorkOrder
 	var total int64
 
@@ -197,11 +229,46 @@ func (s *Service) ListByStatus(status, role string, userID, departmentID uint64,
 	// 角色数据范围限定
 	switch role {
 	case "handler", "":
+		// 一线人员只看分配给自己的工单
 		query = query.Where("assignee_id = ?", userID)
-	case "supervisor":
-		query = query.Where("department_id = ?", departmentID)
-	case "manager":
-		query = query.Where("department_id = ?", departmentID)
+	case "supervisor", "manager":
+		// 领班/经理看所管全部部门的工单
+		deptIDs := parseDeptIDs(departmentIDs, departmentID)
+		query = query.Where("department_id IN ?", deptIDs)
+	case "admin", "director":
+		// 全量
+	}
+
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	if page < 1 { page = 1 }
+	if size < 1 || size > 100 { size = 20 }
+
+	if err := query.Order("id DESC").Offset((page-1)*size).Limit(size).Find(&list).Error; err != nil {
+		return nil, 0, err
+	}
+
+	return list, total, nil
+}
+
+// ListAll 查询全部工单（不按状态过滤，角色限定）
+func (s *Service) ListAll(role string, userID, departmentID uint64, departmentIDs string, page, size int) ([]model.WorkOrder, int64, error) {
+	var list []model.WorkOrder
+	var total int64
+
+	query := s.db.Model(&model.WorkOrder{})
+
+	// 角色数据范围限定
+	switch role {
+	case "handler", "":
+		// 一线人员只看分配给自己的工单
+		query = query.Where("assignee_id = ?", userID)
+	case "supervisor", "manager":
+		// 领班/经理看所管全部部门的工单
+		deptIDs := parseDeptIDs(departmentIDs, departmentID)
+		query = query.Where("department_id IN ?", deptIDs)
 	case "admin", "director":
 		// 全量
 	}
@@ -228,7 +295,9 @@ func (s *Service) GetOrder(id uint64) (*model.WorkOrder, []model.WorkOrderLog, e
 	}
 
 	var logs []model.WorkOrderLog
-	s.db.Where("order_id = ?", id).Order("id ASC").Find(&logs)
+	if err := s.db.Where("order_id = ?", id).Order("id ASC").Find(&logs).Error; err != nil {
+		s.sugar.Warnf("查询工单日志失败: order=%d, err=%v", id, err)
+	}
 
 	return &order, logs, nil
 }
@@ -256,11 +325,21 @@ func (s *Service) AddSuppressCount(orderID uint64, newPicURL string) {
 // ========== 内部方法 ==========
 
 func (s *Service) addLog(orderID, operatorID uint64, operatorName, fromStatus, toStatus, comment string) {
+	action := toStatus
+	if fromStatus == "" && toStatus == "pending" {
+		action = "created"
+	} else if toStatus == "processing" {
+		action = "accepted"
+	} else if toStatus == "completed" {
+		action = "completed"
+	} else if toStatus == "pending" && fromStatus == "processing" {
+		action = "transferred"
+	}
 	s.db.Create(&model.WorkOrderLog{
 		OrderID:      orderID,
 		OperatorID:   operatorID,
 		OperatorName: operatorName,
-		Action:       "created",
+		Action:       action,
 		FromStatus:   fromStatus,
 		ToStatus:     toStatus,
 		Comment:      comment,
@@ -268,7 +347,7 @@ func (s *Service) addLog(orderID, operatorID uint64, operatorName, fromStatus, t
 }
 
 func (s *Service) generateOrderNo() string {
-	return fmt.Sprintf("WD-%s-%04d", time.Now().Format("20060102"), time.Now().UnixMilli()%10000)
+	return fmt.Sprintf("WD-%s-%06d", time.Now().Format("20060102"), time.Now().UnixMilli()%1000000)
 }
 
 func degreeToPriority(degree int) string {
@@ -279,3 +358,22 @@ func degreeToPriority(degree int) string {
 	default: return "low"
 	}
 }
+
+// parseDeptIDs 解析逗号分隔的部门ID字符串
+func parseDeptIDs(deptIDsStr string, defaultDeptID uint64) []uint64 {
+	if deptIDsStr == "" {
+		return []uint64{defaultDeptID}
+	}
+	parts := strings.Split(deptIDsStr, ",")
+	ids := make([]uint64, 0, len(parts))
+	for _, p := range parts {
+		if id, err := strconv.ParseUint(strings.TrimSpace(p), 10, 64); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return []uint64{defaultDeptID}
+	}
+	return ids
+}
+

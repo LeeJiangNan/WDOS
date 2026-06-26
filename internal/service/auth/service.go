@@ -10,7 +10,6 @@ import (
 	jwtpkg "github.com/LeeJiangNan/WDOS/internal/pkg/jwt"
 	"github.com/LeeJiangNan/WDOS/internal/model"
 	"go.uber.org/zap"
-	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
@@ -81,7 +80,10 @@ func (s *Service) code2openid(code string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取微信响应失败: %w", err)
+	}
 	var result struct {
 		OpenID     string `json:"openid"`
 		SessionKey string `json:"session_key"`
@@ -111,7 +113,7 @@ type WebLoginRequest struct {
 func (s *Service) WebLogin(username, password string) (*LoginResponse, error) {
 	// 查用户（管理员/经理等通过手机号或用户名登录）
 	var user model.User
-	err := s.db.Where("(name = ? OR phone = ?) AND status = ?", username, username, "active").First(&user).Error
+	err := s.db.Where("(name = ? OR phone = ? OR username = ?) AND status = ?", username, username, username, "active").First(&user).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil, fmt.Errorf("用户名或密码错误")
@@ -119,8 +121,8 @@ func (s *Service) WebLogin(username, password string) (*LoginResponse, error) {
 		return nil, fmt.Errorf("查询用户失败: %w", err)
 	}
 
-	// 验证密码（bcrypt）
-	if !CheckPassword(user.Password, password) {
+	// 验证密码（明文）
+	if user.Password != password {
 		return nil, fmt.Errorf("用户名或密码错误")
 	}
 
@@ -145,7 +147,8 @@ func (s *Service) RefreshToken(oldToken string) (*LoginResponse, error) {
 		return nil, fmt.Errorf("用户已被禁用")
 	}
 
-	tokenStr, expiresIn, err := s.jwtMgr.Generate(user.ID, user.Role, user.DepartmentID, user.GroupID)
+	deptIDs := s.getUserDepartmentIDs(user.ID, user.DepartmentID)
+	tokenStr, expiresIn, err := s.jwtMgr.Generate(user.ID, user.Role, user.DepartmentID, user.GroupID, deptIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -159,8 +162,22 @@ func (s *Service) RefreshToken(oldToken string) (*LoginResponse, error) {
 
 // ========== 内部方法 ==========
 
+// getUserDepartmentIDs 获取用户所有部门ID
+func (s *Service) getUserDepartmentIDs(userID uint64, primaryDeptID uint64) []uint64 {
+	var uds []model.UserDepartment
+	if err := s.db.Where("user_id = ?", userID).Find(&uds).Error; err != nil || len(uds) == 0 {
+		return []uint64{primaryDeptID}
+	}
+	ids := make([]uint64, 0, len(uds))
+	for _, ud := range uds {
+		ids = append(ids, ud.DepartmentID)
+	}
+	return ids
+}
+
 func (s *Service) generateToken(user *model.User) (*LoginResponse, error) {
-	tokenStr, expiresIn, err := s.jwtMgr.Generate(user.ID, user.Role, user.DepartmentID, user.GroupID)
+	deptIDs := s.getUserDepartmentIDs(user.ID, user.DepartmentID)
+	tokenStr, expiresIn, err := s.jwtMgr.Generate(user.ID, user.Role, user.DepartmentID, user.GroupID, deptIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -186,14 +203,7 @@ func (s *Service) GetUserByID(id uint64) (*model.User, error) {
 
 // ========== 密码工具 ==========
 
-// HashPassword 加密密码
+// HashPassword 明文存储（调试阶段）
 func HashPassword(password string) (string, error) {
-	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-	return string(bytes), err
-}
-
-// CheckPassword 校验密码
-func CheckPassword(hashed, password string) bool {
-	err := bcrypt.CompareHashAndPassword([]byte(hashed), []byte(password))
-	return err == nil
+	return password, nil
 }

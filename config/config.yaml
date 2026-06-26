@@ -1,50 +1,46 @@
-# ============================================================
-# WDOS 配置文件
-# 密码/密钥类敏感信息通过环境变量注入: ${VAR_NAME}
-# ============================================================
 server:
-  port: "8080"
+  port: "9090"
   mode: debug
-
-crip:
-  callback_path: "/api/v1/callback/crip"
-  openapi_base: "http://127.0.0.1:8080"
-  openapi_app_id: "${CRIP_APP_ID}"
-  openapi_app_secret: "${CRIP_APP_SECRET}"
-  heartbeat_interval: 300
 
 database:
   host: "127.0.0.1"
-  port: 3307
+  port: "3307"
+  user: "root"
+  password: "root123"
   name: "wdos_db"
-  user: "wdos"
-  password: "wdos123"
 
 redis:
   addr: "127.0.0.1:6380"
-  prefix: "wdos:"
-  db: 0
   password: ""
+  db: 0
+  prefix: "wdos:"
 
 minio:
   endpoint: "127.0.0.1:9000"
   access_key: "minioadmin"
-  secret_key: "minioadmin123"
+  secret_key: "minioadmin"
   bucket: "wdos"
   use_ssl: false
 
-wechat:
-  app_id: "${WECHAT_APP_ID}"
-  app_secret: "${WECHAT_APP_SECRET}"
-
 jwt:
-  secret: "${JWT_SECRET}"
-  expire_seconds: 604800
+  secret: "wdos-dev-secret-key-2026"
+  expire_seconds: 86400
 
 sla:
   accept_l1_seconds: 30
-  accept_l2_seconds: 120
+  accept_l2_seconds: 150  
   accept_l3_seconds: 300
-  process_l1_seconds: 150
+  process_l1_seconds: 60
   process_l2_seconds: 300
   process_l3_seconds: 600
+
+crip:
+  callback_path: "/api/v1/callback/crip"
+  openapi_base: "http://127.0.0.1:9090"
+  openapi_app_id: "test"
+  openapi_app_secret: "test"
+  callback_secret: "test"
+
+wechat:
+  app_id: ""
+  app_secret: ""

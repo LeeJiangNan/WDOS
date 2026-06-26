@@ -3,6 +3,7 @@ package notify
 
 import (
 	"encoding/json"
+	"strconv"
 	"sync"
 	"time"
 
@@ -38,29 +39,56 @@ type EscalationPayload struct {
 	OverSeconds int    `json:"over_seconds"`
 }
 
+// clientInfo 连接元信息
+type clientInfo struct {
+	userID uint64
+	role   string
+}
+
 // Hub WebSocket 连接管理中心
 type Hub struct {
-	clients    map[*websocket.Conn]uint64 // conn → userID
-	mu         sync.RWMutex
-	db         *gorm.DB
-	sugar      *zap.SugaredLogger
+	clients map[*websocket.Conn]clientInfo // conn → {userID, role}
+	mu      sync.RWMutex
+	db      *gorm.DB
+	sugar   *zap.SugaredLogger
 }
 
 // NewHub 创建通知 Hub
 func NewHub(db *gorm.DB, sugar *zap.SugaredLogger) *Hub {
-	return &Hub{
-		clients: make(map[*websocket.Conn]uint64),
+	h := &Hub{
+		clients: make(map[*websocket.Conn]clientInfo),
 		db:      db,
 		sugar:   sugar,
+	}
+	go h.heartbeatLoop()
+	return h
+}
+
+// heartbeatLoop 定期 ping 所有连接，清理僵尸连接
+func (h *Hub) heartbeatLoop() {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		h.mu.RLock()
+		dead := []*websocket.Conn{}
+		for conn := range h.clients {
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				dead = append(dead, conn)
+			}
+		}
+		h.mu.RUnlock()
+		for _, c := range dead {
+			h.Unregister(c)
+		}
 	}
 }
 
 // Register 注册 WebSocket 连接
-func (h *Hub) Register(conn *websocket.Conn, userID uint64) {
+func (h *Hub) Register(conn *websocket.Conn, userID uint64, role string) {
 	h.mu.Lock()
-	h.clients[conn] = userID
+	h.clients[conn] = clientInfo{userID: userID, role: role}
 	h.mu.Unlock()
-	h.sugar.Infof("WebSocket 连接: user=%d, 当前连接数=%d", userID, len(h.clients))
+	h.sugar.Infof("WebSocket 连接: user=%d, role=%s, 当前连接数=%d", userID, role, len(h.clients))
 }
 
 // Unregister 注销连接
@@ -79,7 +107,8 @@ func (h *Hub) Broadcast(msg Message) {
 
 	for conn := range h.clients {
 		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			go h.Unregister(conn)
+			c := conn
+			go h.Unregister(c) // 捕获当前 conn，避免闭包变量覆盖
 		}
 	}
 }
@@ -90,9 +119,13 @@ func (h *Hub) BroadcastToRole(msg Message, role string) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	// 简化版：广播给所有连接（实际应按 user 的 role 过滤）
-	for conn := range h.clients {
-		conn.WriteMessage(websocket.TextMessage, data)
+	for conn, info := range h.clients {
+		if info.role == role {
+			if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+				c := conn
+				go h.Unregister(c)
+			}
+		}
 	}
 }
 
@@ -104,10 +137,20 @@ func (h *Hub) NewOrder(payload NewOrderPayload) {
 
 // Escalation 超时上报通知
 func (h *Hub) Escalation(payload EscalationPayload) {
-	h.Broadcast(Message{Type: "escalation_l" + itoa(payload.Level), Data: payload, CreatedAt: time.Now()})
-	h.saveHistory(0, "escalation_l"+itoa(payload.Level),
+	level := strconv.Itoa(payload.Level)
+	// L1→supervisor, L2→manager, L3→admin/director
+	targetRole := map[int]string{1: "supervisor", 2: "manager", 3: "director"}[payload.Level]
+	msg := Message{Type: "escalation_l" + level, Data: payload, CreatedAt: time.Now()}
+	if targetRole != "" {
+		h.BroadcastToRole(msg, targetRole)
+		// 同时广播给 admin
+		h.BroadcastToRole(msg, "admin")
+	} else {
+		h.Broadcast(msg)
+	}
+	h.saveHistory(0, "escalation_l"+level,
 		payload.LevelName+"超时提醒",
-		payload.OrderNo+" "+payload.Stage+"超时L"+itoa(payload.Level),
+		payload.OrderNo+" "+payload.Stage+"超时L"+level,
 		payload.OrderID)
 }
 
@@ -129,14 +172,4 @@ func (h *Hub) OrderCompleted(orderID uint64, orderNo string) {
 func (h *Hub) saveHistory(userID uint64, msgType, title, message string, orderID uint64) {
 	// 写 MySQL 通知表（如果后续创建的话），目前先记日志
 	h.sugar.Infof("📬 通知: [%s] %s - %s (order=%d)", msgType, title, message, orderID)
-}
-
-func itoa(n int) string {
-	if n == 0 { return "0" }
-	s := ""
-	for n > 0 {
-		s = string(rune('0'+n%10)) + s
-		n /= 10
-	}
-	return s
 }

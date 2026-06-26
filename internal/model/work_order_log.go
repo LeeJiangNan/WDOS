@@ -1,6 +1,5 @@
 package model
 
-import "time"
 
 // WorkOrderLog 工单操作日志
 type WorkOrderLog struct {
@@ -13,7 +12,7 @@ type WorkOrderLog struct {
 	ToStatus     string    `gorm:"size:20;comment:操作后状态" json:"to_status"`
 	Comment      string    `gorm:"type:text;comment:备注" json:"comment"`
 	Metadata     string    `gorm:"type:json;comment:附加元数据" json:"metadata"`
-	CreatedAt    time.Time `gorm:"autoCreateTime" json:"created_at"`
+	CreatedAt    LocalTime `gorm:"autoCreateTime" json:"created_at"`
 }
 
 func (WorkOrderLog) TableName() string { return "work_order_log" }

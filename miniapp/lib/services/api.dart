@@ -6,7 +6,8 @@ import '../config/api.dart';
 class ApiService {
   static Future<Map<String, dynamic>> get(String path, {Map<String, String>? params}) async {
     final token = await ApiConfig.getToken();
-    final uri = Uri.parse('${ApiConfig.baseUrl}$path').replace(queryParameters: params);
+    final merged = <String, String>{...?params, ...ApiConfig.viewAsParam};
+    final uri = Uri.parse('${ApiConfig.baseUrl}$path').replace(queryParameters: merged.isNotEmpty ? merged : null);
     final res = await http.get(uri, headers: _headers(token));
     return _handle(res);
   }

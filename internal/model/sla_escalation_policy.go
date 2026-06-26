@@ -1,6 +1,5 @@
 package model
 
-import "time"
 
 // SlaEscalationPolicy SLA 上报策略
 type SlaEscalationPolicy struct {
@@ -21,7 +20,7 @@ type SlaEscalationPolicy struct {
 	ProcessL3GroupID    uint64    `gorm:"comment:处理三级上报用户组" json:"process_l3_group_id"`
 	NotifyChannels      string    `gorm:"type:json;comment:通知方式" json:"notify_channels"`
 	IsActive            bool      `gorm:"default:true;comment:是否启用" json:"is_active"`
-	CreatedAt           time.Time `gorm:"autoCreateTime" json:"created_at"`
+	CreatedAt           LocalTime `gorm:"autoCreateTime" json:"created_at"`
 }
 
 func (SlaEscalationPolicy) TableName() string { return "sla_escalation_policy" }

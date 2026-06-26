@@ -53,10 +53,10 @@ func (e *Engine) Route(cameraGroups []string) *RouteResult {
 	return &RouteResult{AreaName: "未分配"}
 }
 
-// ListRules 获取活跃路由规则
+// ListRules 获取活跃路由规则（按优先级降序）
 func (e *Engine) ListRules() []model.AreaRoutingRule {
 	var rules []model.AreaRoutingRule
-	e.db.Where("is_active = ?", true).Find(&rules)
+	e.db.Where("is_active = ?", true).Order("priority DESC").Find(&rules)
 	return rules
 }
 
@@ -66,12 +66,29 @@ func (e *Engine) CreateRule(rule *model.AreaRoutingRule) error {
 	return e.db.Create(rule).Error
 }
 
-// matchPattern 通配符匹配 (* 匹配任意)
+// matchPattern 通配符匹配
+// "B1*"   前缀匹配 → 以 B1 开头
+// "*机房" 后缀匹配 → 以 机房 结尾
+// "*扶梯*" 包含匹配 → 包含 扶梯
+// 无 *   → 精确匹配
 func matchPattern(pattern, target string) bool {
-	if pattern == "*" { return true }
+	if pattern == "*" {
+		return true
+	}
 	if !strings.Contains(pattern, "*") {
 		return pattern == target
 	}
+	// 前后都有 * → 包含匹配
+	if strings.HasPrefix(pattern, "*") && strings.HasSuffix(pattern, "*") {
+		sub := strings.Trim(pattern, "*")
+		return strings.Contains(target, sub)
+	}
+	// 只有前面有 * → 后缀匹配
+	if strings.HasPrefix(pattern, "*") {
+		suffix := strings.TrimPrefix(pattern, "*")
+		return strings.HasSuffix(target, suffix)
+	}
+	// 只有后面有 * → 前缀匹配
 	prefix := strings.TrimSuffix(pattern, "*")
 	return strings.HasPrefix(target, prefix)
 }

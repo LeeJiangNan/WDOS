@@ -1,6 +1,5 @@
 package model
 
-import "time"
 
 // WorkOrderTemplate 工单模板
 type WorkOrderTemplate struct {
@@ -10,8 +9,8 @@ type WorkOrderTemplate struct {
 	FlowID      uint64    `gorm:"comment:关联工作流" json:"flow_id"`
 	FormSchema  string    `gorm:"type:json;comment:表单定义" json:"form_schema"`
 	IsActive    bool      `gorm:"default:true;comment:是否启用" json:"is_active"`
-	CreatedAt   time.Time `gorm:"autoCreateTime" json:"created_at"`
-	UpdatedAt   time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+	CreatedAt   LocalTime `gorm:"autoCreateTime" json:"created_at"`
+	UpdatedAt   LocalTime `gorm:"autoUpdateTime" json:"updated_at"`
 }
 
 func (WorkOrderTemplate) TableName() string { return "work_order_template" }

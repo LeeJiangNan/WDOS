@@ -1,13 +1,12 @@
 package model
 
-import "time"
 
 // SuppressionRule 报警抑制规则
 type SuppressionRule struct {
 	ID                  uint64    `gorm:"primaryKey;autoIncrement" json:"id"`
 	Name                string    `gorm:"size:100;comment:规则名称" json:"name"`
-	CameraGroupFilter   string    `gorm:"type:json;comment:适用摄像头分组" json:"camera_group_filter"`
-	AlgorithmIDs        string    `gorm:"type:json;comment:适用算法ID" json:"algorithm_ids"`
+	CameraGroupFilter   *string   `gorm:"type:json;comment:适用摄像头分组" json:"camera_group_filter"`
+	AlgorithmIDs        *string   `gorm:"type:json;comment:适用算法ID" json:"algorithm_ids"`
 	SuppressEnabled     bool      `gorm:"default:true;comment:启用抑制" json:"suppress_enabled"`
 	LockEnabled         bool      `gorm:"default:false;comment:启用锁定" json:"lock_enabled"`
 	LockAfterSeconds    int       `gorm:"default:300;comment:锁定触发时间(秒)" json:"lock_after_seconds"`
@@ -19,7 +18,7 @@ type SuppressionRule struct {
 	NotifyOnLock        bool      `gorm:"default:true;comment:锁定通知" json:"notify_on_lock"`
 	SummaryOnUnlock     bool      `gorm:"default:true;comment:解锁摘要" json:"summary_on_unlock"`
 	IsActive            bool      `gorm:"default:true;comment:是否启用" json:"is_active"`
-	CreatedAt           time.Time `gorm:"autoCreateTime" json:"created_at"`
+	CreatedAt           LocalTime `gorm:"autoCreateTime" json:"created_at"`
 }
 
 func (SuppressionRule) TableName() string { return "suppression_rule" }

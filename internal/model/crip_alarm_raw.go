@@ -1,6 +1,5 @@
 package model
 
-import "time"
 
 // CRIPAlarmRaw CRIP 原始报警记录
 type CRIPAlarmRaw struct {
@@ -18,8 +17,8 @@ type CRIPAlarmRaw struct {
 	VideoURL       string    `gorm:"size:500;comment:视频URL" json:"video_url"`
 	GPS            string    `gorm:"size:50;comment:GPS坐标" json:"gps"`
 	RawJSON        string    `gorm:"type:json;comment:完整Callback JSON" json:"raw_json"`
-	AlarmTimestamp time.Time `gorm:"index:idx_alarm_time;comment:报警时间" json:"alarm_timestamp"`
-	ReceivedAt     time.Time `gorm:"autoCreateTime;comment:接收时间" json:"received_at"`
+	AlarmTimestamp LocalTime `gorm:"index:idx_alarm_time;comment:报警时间" json:"alarm_timestamp"`
+	ReceivedAt     LocalTime `gorm:"autoCreateTime;comment:接收时间" json:"received_at"`
 	Source         string    `gorm:"type:enum('callback','compensation');default:callback;comment:数据来源" json:"source"`
 	Suppressed     bool      `gorm:"default:false;comment:是否被抑制" json:"suppressed"`
 	SuppressedByID *uint64   `gorm:"comment:被哪个工单抑制" json:"suppressed_by_order_id"`
